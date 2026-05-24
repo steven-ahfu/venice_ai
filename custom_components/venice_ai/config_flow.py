@@ -247,16 +247,18 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 text_resp = await client.models.list(model_type="text")
                 if isinstance(text_resp, list):
                     fetched = [
-                        SelectOptionDict(label=m.get("id", "Unknown"), value=m.get("id", ""))
+                        SelectOptionDict(
+                            label=m.get("id", "Unknown") + (" 🔍" if m.get("model_spec", {}).get("capabilities", {}).get("supportsWebSearch", False) else ""),
+                            value=m.get("id", ""),
+                        )
                         for m in text_resp
                         if m.get("id")
-                        and m.get("model_spec", {}).get("capabilities", {}).get("supportsWebSearch", False)
                     ]
                     if fetched:
                         chat_options = fetched
-                        _LOGGER.debug("Found %d text models with web search support", len(fetched))
+                        _LOGGER.debug("Found %d text models", len(fetched))
                     else:
-                        _LOGGER.warning("No text models with web search support found")
+                        _LOGGER.warning("No text models found")
                 else:
                     _LOGGER.error(
                         "Invalid text models response: expected list, got %s",
