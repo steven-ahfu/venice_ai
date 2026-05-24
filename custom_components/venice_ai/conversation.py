@@ -347,22 +347,28 @@ class VeniceAIConversationEntity(ConversationEntity):
             _LOGGER.error("Error rendering prompt template: %s", err)
             raise HomeAssistantError(f"Error rendering prompt: {err}") from err
 
-        # Set up LLM API if configured
+        # Set up LLM API(s) if configured.  Accepts either a list of API ids
+        # (new multi-select form) or a single string (legacy stored value).
         tools: list[llm.Tool] = []
         if llm_api:
-            try:
-                llm_context = llm.LLMContext(
-                    platform=DOMAIN,
-                    context=user_input.context,
-                    user_prompt=user_input.text,
-                    language=user_input.language,
-                    assistant=HOME_ASSISTANT_AGENT,
-                    device_id=user_input.device_id,
-                )
-                api = await llm.async_get_api(self.hass, llm_api, llm_context)
-                tools = list(api.tools)
-            except Exception as err:
-                _LOGGER.warning("Failed to get LLM API %s: %s", llm_api, err)
+            if isinstance(llm_api, str):
+                llm_api_ids = [llm_api]
+            else:
+                llm_api_ids = list(llm_api)
+            llm_context = llm.LLMContext(
+                platform=DOMAIN,
+                context=user_input.context,
+                user_prompt=user_input.text,
+                language=user_input.language,
+                assistant=HOME_ASSISTANT_AGENT,
+                device_id=user_input.device_id,
+            )
+            for api_id in llm_api_ids:
+                try:
+                    api = await llm.async_get_api(self.hass, api_id, llm_context)
+                    tools.extend(api.tools)
+                except Exception as err:
+                    _LOGGER.warning("Failed to get LLM API %s: %s", api_id, err)
 
         # Convert tools to Venice format
         venice_tools = []

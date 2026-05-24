@@ -36,10 +36,12 @@
             "continue_conversation": "Keep listening after questions (extended conversation)",
             "enable_web_search": "Enable Web Search",
             "max_tool_iterations": "Max Tool Iterations",
+            "tts_enabled": "Provide Text-to-Speech (Venice voices)",
             "tts_model": "TTS Model",
             "tts_voice": "TTS Voice",
             "tts_response_format": "TTS Response Format",
             "tts_speed": "TTS Speed",
+            "stt_enabled": "Provide Speech-to-Text (Venice transcription)",
             "stt_model": "STT Model",
             "stt_response_format": "STT Response Format",
             "stt_timestamps": "STT Include Timestamps"

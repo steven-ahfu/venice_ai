@@ -43,9 +43,13 @@ from .const import (
     CONF_TTS_VOICE,
     CONF_TTS_RESPONSE_FORMAT,
     CONF_TTS_SPEED,
+    CONF_STT_ENABLED,
+    RECOMMENDED_STT_ENABLED,
     CONF_STT_MODEL,
     CONF_STT_RESPONSE_FORMAT,
     CONF_STT_TIMESTAMPS,
+    CONF_TTS_ENABLED,
+    RECOMMENDED_TTS_ENABLED,
     CONF_ENABLE_WEB_SEARCH,
     RECOMMENDED_ENABLE_WEB_SEARCH,
     CONF_CONTINUE_CONVERSATION,
@@ -325,7 +329,16 @@ class VeniceAIOptionsFlow(OptionsFlow):
         """Build the voluptuous options schema from fetched model lists."""
         options = self.config_entry.options
         if llm_api_options is None:
-            llm_api_options = [SelectOptionDict(label="None (disabled)", value="")]
+            llm_api_options = []
+        # Drop any stored LLM API ids that are no longer registered, so the
+        # multi-select doesn't try to render an option that isn't in
+        # ``llm_api_options`` (which would either render blank or be silently
+        # discarded by the frontend).
+        valid_api_ids = {opt["value"] for opt in llm_api_options}
+        suggested_llm_apis = options.get(CONF_LLM_HASS_API) or []
+        if isinstance(suggested_llm_apis, str):
+            suggested_llm_apis = [suggested_llm_apis]
+        suggested_llm_apis = [a for a in suggested_llm_apis if a in valid_api_ids]
         return vol.Schema(
             {
                 vol.Optional(
@@ -359,14 +372,16 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 ): NumberSelector(
                     NumberSelectorConfig(min=0.0, max=2.0, step=0.05, mode="slider")
                 ),
+                # Multi-checkbox: matches the canonical HA pattern (openai_conversation,
+                # google_generative_ai_conversation, etc).  The previous DROPDOWN +
+                # custom_value combo silently dropped selections in the frontend.
                 vol.Optional(
                     CONF_LLM_HASS_API,
-                    description={"suggested_value": options.get(CONF_LLM_HASS_API, "")},
+                    description={"suggested_value": suggested_llm_apis},
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=llm_api_options,
-                        mode=SelectSelectorMode.DROPDOWN,
-                        custom_value=True,
+                        multiple=True,
                     )
                 ),
                 vol.Optional(
@@ -392,6 +407,10 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     NumberSelectorConfig(min=1, max=20, step=1, mode="slider")
                 ),
                 # TTS options
+                vol.Optional(
+                    CONF_TTS_ENABLED,
+                    description={"suggested_value": options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)},
+                ): BooleanSelector(),
                 vol.Optional(
                     CONF_TTS_MODEL,
                     description={"suggested_value": options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)},
@@ -434,6 +453,10 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 ),
                 # STT options
                 vol.Optional(
+                    CONF_STT_ENABLED,
+                    description={"suggested_value": options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED)},
+                ): BooleanSelector(),
+                vol.Optional(
                     CONF_STT_MODEL,
                     description={"suggested_value": options.get(CONF_STT_MODEL, RECOMMENDED_STT_MODEL)},
                 ): SelectSelector(
@@ -464,31 +487,17 @@ class VeniceAIOptionsFlow(OptionsFlow):
             }
         )
 
-    async def _fetch_llm_api_options(self) -> list[SelectOptionDict]:
-        """Return a list of available HA LLM API IDs as SelectOptionDicts.
+    def _fetch_llm_api_options(self) -> list[SelectOptionDict]:
+        """Return a list of registered HA LLM APIs as SelectOptionDicts.
 
-        Always includes a leading "None (disabled)" blank entry.  Dynamically
-        queries the llm helper if ``async_get_api_list`` is available; falls
-        back to the well-known ``"assist"`` API otherwise.
+        Uses ``llm.async_get_apis(hass)`` (the actual public API — the previous
+        ``async_get_api_list`` probe did not exist in HA core, so the dropdown
+        always fell through to a stub "assist"-only fallback).  Each registered
+        API exposes ``.id`` and ``.name``.
         """
-        none_option = SelectOptionDict(label="None (disabled)", value="")
-        api_ids: list[str] = []
-        try:
-            if hasattr(llm, "async_get_api_list"):
-                api_ids = await llm.async_get_api_list(self.hass)
-            else:
-                # Probe the known "assist" API as a safe fallback
-                try:
-                    await llm.async_get_api(self.hass, "assist")
-                    api_ids = ["assist"]
-                except Exception:
-                    pass
-        except Exception:
-            _LOGGER.debug("Could not fetch LLM API list; using fallback")
-            api_ids = ["assist"]
-
-        return [none_option] + [
-            SelectOptionDict(label=api_id, value=api_id) for api_id in api_ids
+        return [
+            SelectOptionDict(label=api.name, value=api.id)
+            for api in llm.async_get_apis(self.hass)
         ]
 
     async def async_step_init(
@@ -497,27 +506,37 @@ class VeniceAIOptionsFlow(OptionsFlow):
         """Manage the options."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            # Normalise the LLM API field: treat blank string as absent
+            # Normalise CONF_LLM_HASS_API: empty list / blank → drop key entirely.
             llm_api_value = user_input.get(CONF_LLM_HASS_API)
             if not llm_api_value:
-                user_input = {k: v for k, v in user_input.items() if k != CONF_LLM_HASS_API}
+                user_input.pop(CONF_LLM_HASS_API, None)
             else:
-                # Validate the LLM API ID before accepting
-                try:
-                    await llm.async_get_api(self.hass, llm_api_value)
-                except Exception as err:
-                    _LOGGER.warning(
-                        "Invalid LLM API ID '%s' entered in options flow: %s",
-                        llm_api_value,
-                        err,
-                    )
-                    errors[CONF_LLM_HASS_API] = "invalid_llm_api"
+                # Accept either a list (multi-select) or a single string
+                # (legacy stored value).  Validate every entry is registered.
+                if isinstance(llm_api_value, str):
+                    llm_api_value = [llm_api_value]
+                valid_ids = {api.id for api in llm.async_get_apis(self.hass)}
+                filtered = [a for a in llm_api_value if a in valid_ids]
+                if not filtered:
+                    user_input.pop(CONF_LLM_HASS_API, None)
+                else:
+                    user_input[CONF_LLM_HASS_API] = filtered
 
             if not errors:
-                return self.async_create_entry(title="", data=user_input)
+                # Merge user_input into the existing options so fields the
+                # form didn't include (e.g. STT/TTS settings that the user
+                # didn't touch on this visit) aren't wiped out.  This matches
+                # the pattern in HA core's openai_conversation config flow.
+                merged: dict[str, Any] = {**self.config_entry.options, **user_input}
+                # If the user explicitly cleared CONF_LLM_HASS_API on this
+                # form submission, drop it from merged too rather than letting
+                # the previous value resurrect via the merge.
+                if CONF_LLM_HASS_API not in user_input:
+                    merged.pop(CONF_LLM_HASS_API, None)
+                return self.async_create_entry(title="", data=merged)
 
         models, tts_models, stt_models, fetch_errors = await self._fetch_model_options()
-        llm_api_options = await self._fetch_llm_api_options()
+        llm_api_options = self._fetch_llm_api_options()
         options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options)
 
         # Merge fetch errors with validation errors
