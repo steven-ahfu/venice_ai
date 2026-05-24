@@ -507,18 +507,17 @@ class VeniceAIOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             # Normalise the LLM API field: treat blank string as absent
-            if CONF_LLM_HASS_API in user_input and not user_input[CONF_LLM_HASS_API]:
+            llm_api_value = user_input.get(CONF_LLM_HASS_API)
+            if not llm_api_value:
                 user_input = {k: v for k, v in user_input.items() if k != CONF_LLM_HASS_API}
             else:
-                # SEC-4 fix: validate custom LLM API ID before accepting
+                # Validate the LLM API ID before accepting
                 try:
-                    await llm.async_get_api(
-                        self.hass, user_input[CONF_LLM_HASS_API]
-                    )
+                    await llm.async_get_api(self.hass, llm_api_value)
                 except Exception as err:
                     _LOGGER.warning(
                         "Invalid LLM API ID '%s' entered in options flow: %s",
-                        user_input[CONF_LLM_HASS_API],
+                        llm_api_value,
                         err,
                     )
                     errors[CONF_LLM_HASS_API] = "invalid_llm_api"
