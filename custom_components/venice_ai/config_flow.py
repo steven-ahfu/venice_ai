@@ -384,16 +384,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_ENABLE_WEB_SEARCH,
                     description={"suggested_value": options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(label="Off", value="off"),
-                            SelectOptionDict(label="Auto (model decides)", value="auto"),
-                            SelectOptionDict(label="Always On", value="on"),
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
+                ): BooleanSelector(),
                 vol.Optional(
                     CONF_MAX_TOOL_ITERATIONS,
                     description={"suggested_value": options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)},

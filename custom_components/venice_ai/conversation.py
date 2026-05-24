@@ -407,8 +407,8 @@ class VeniceAIConversationEntity(ConversationEntity):
                 venice_params: dict[str, Any] = {}
                 if disable_thinking:
                     venice_params["disable_thinking"] = True
-                if enable_web_search != "off":
-                    venice_params["enable_web_search"] = enable_web_search
+                if enable_web_search:
+                    venice_params["enable_web_search"] = "auto"
                 venice_params = venice_params or None
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,

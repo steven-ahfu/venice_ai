@@ -34,7 +34,7 @@
             "strip_thinking_response": "Strip thinking response (for reasoning models)",
             "disable_thinking": "Disable thinking (for reasoning models)",
             "continue_conversation": "Keep listening after questions (extended conversation)",
-            "enable_web_search": "Web Search (off / auto / always on)",
+            "enable_web_search": "Enable Web Search",
             "max_tool_iterations": "Max Tool Iterations",
             "tts_model": "TTS Model",
             "tts_voice": "TTS Voice",

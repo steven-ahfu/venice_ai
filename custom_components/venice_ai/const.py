@@ -57,9 +57,9 @@ VENICE_TTS_VOICES = [
 CONF_CONTINUE_CONVERSATION = "continue_conversation"
 RECOMMENDED_CONTINUE_CONVERSATION = False
 
-# Venice AI web search option ("off" / "auto" / "on")
+# Venice AI web search toggle
 CONF_ENABLE_WEB_SEARCH = "enable_web_search"
-RECOMMENDED_ENABLE_WEB_SEARCH = "off"
+RECOMMENDED_ENABLE_WEB_SEARCH = False
 
 # Venice AI STT options
 CONF_STT_MODEL = "stt_model"
