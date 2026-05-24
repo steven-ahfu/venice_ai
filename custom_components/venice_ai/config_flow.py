@@ -46,6 +46,8 @@ from .const import (
     CONF_STT_MODEL,
     CONF_STT_RESPONSE_FORMAT,
     CONF_STT_TIMESTAMPS,
+    CONF_ENABLE_WEB_SEARCH,
+    RECOMMENDED_ENABLE_WEB_SEARCH,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -239,12 +241,13 @@ class VeniceAIOptionsFlow(OptionsFlow):
                         SelectOptionDict(label=m.get("id", "Unknown"), value=m.get("id", ""))
                         for m in text_resp
                         if m.get("id")
+                        and m.get("model_spec", {}).get("capabilities", {}).get("supportsWebSearch", False)
                     ]
                     if fetched:
                         chat_options = fetched
-                        _LOGGER.debug("Found %d text models", len(fetched))
+                        _LOGGER.debug("Found %d text models with web search support", len(fetched))
                     else:
-                        _LOGGER.warning("No text models found")
+                        _LOGGER.warning("No text models with web search support found")
                 else:
                     _LOGGER.error(
                         "Invalid text models response: expected list, got %s",
@@ -363,6 +366,19 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_DISABLE_THINKING,
                     description={"suggested_value": options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)},
                 ): BooleanSelector(),
+                vol.Optional(
+                    CONF_ENABLE_WEB_SEARCH,
+                    description={"suggested_value": options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)},
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(label="Off", value="off"),
+                            SelectOptionDict(label="Auto (model decides)", value="auto"),
+                            SelectOptionDict(label="Always On", value="on"),
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(
                     CONF_MAX_TOOL_ITERATIONS,
                     description={"suggested_value": options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)},

@@ -33,6 +33,7 @@
             "max_tokens": "Max Tokens",
             "strip_thinking_response": "Strip thinking response (for reasoning models)",
             "disable_thinking": "Disable thinking (for reasoning models)",
+            "enable_web_search": "Web Search (off / auto / always on)",
             "max_tool_iterations": "Max Tool Iterations",
             "tts_model": "TTS Model",
             "tts_voice": "TTS Voice",

@@ -39,6 +39,8 @@ from .const import (
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
     RECOMMENDED_DISABLE_THINKING,
+    CONF_ENABLE_WEB_SEARCH,
+    RECOMMENDED_ENABLE_WEB_SEARCH,
     DOMAIN,
     HAS_VOLUPTUOUS_OPENAPI,
     MAX_CHAT_HISTORY_SIZE,
@@ -399,9 +401,13 @@ class VeniceAIConversationEntity(ConversationEntity):
                     raise HomeAssistantError("Message list is empty before sending to API.")
 
                 disable_thinking = options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)
-                venice_params: dict[str, Any] | None = None
+                enable_web_search = options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
+                venice_params: dict[str, Any] = {}
                 if disable_thinking:
-                    venice_params = {"disable_thinking": True}
+                    venice_params["disable_thinking"] = True
+                if enable_web_search != "off":
+                    venice_params["enable_web_search"] = enable_web_search
+                venice_params = venice_params or None
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,
                     messages=messages,

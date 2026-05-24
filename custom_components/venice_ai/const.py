@@ -53,6 +53,10 @@ VENICE_TTS_VOICES = [
     "ef_dora", "em_alex", "em_santa",
 ]
 
+# Venice AI web search option ("off" / "auto" / "on")
+CONF_ENABLE_WEB_SEARCH = "enable_web_search"
+RECOMMENDED_ENABLE_WEB_SEARCH = "off"
+
 # Venice AI STT options
 CONF_STT_MODEL = "stt_model"
 RECOMMENDED_STT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
