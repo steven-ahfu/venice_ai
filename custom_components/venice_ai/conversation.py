@@ -39,6 +39,10 @@ from .const import (
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
     RECOMMENDED_DISABLE_THINKING,
+    CONF_ENABLE_WEB_SEARCH,
+    RECOMMENDED_ENABLE_WEB_SEARCH,
+    CONF_CONTINUE_CONVERSATION,
+    RECOMMENDED_CONTINUE_CONVERSATION,
     DOMAIN,
     HAS_VOLUPTUOUS_OPENAPI,
     MAX_CHAT_HISTORY_SIZE,
@@ -295,8 +299,10 @@ class VeniceAIConversationEntity(ConversationEntity):
             _LOGGER.debug("Resuming existing conversation %s (%d messages)", cid, len(self._chat_logs[cid].content))
             return self._chat_logs[cid]
 
-        # New conversation
-        chat_log = ChatLog(conversation_id=cid, content=[])
+        # New conversation. ChatLog requires `hass` as its first dataclass field —
+        # without it instantiation raises TypeError synchronously, which HA's
+        # pipeline surfaces as "Unexpected error during intent recognition".
+        chat_log = ChatLog(hass=self.hass, conversation_id=cid, content=[])
         self._chat_logs[cid] = chat_log
         # Evict least-recently-used if over the limit
         if len(self._chat_logs) > MAX_CHAT_HISTORY_SIZE:
@@ -341,22 +347,28 @@ class VeniceAIConversationEntity(ConversationEntity):
             _LOGGER.error("Error rendering prompt template: %s", err)
             raise HomeAssistantError(f"Error rendering prompt: {err}") from err
 
-        # Set up LLM API if configured
+        # Set up LLM API(s) if configured.  Accepts either a list of API ids
+        # (new multi-select form) or a single string (legacy stored value).
         tools: list[llm.Tool] = []
         if llm_api:
-            try:
-                llm_context = llm.LLMContext(
-                    platform=DOMAIN,
-                    context=user_input.context,
-                    user_prompt=user_input.text,
-                    language=user_input.language,
-                    assistant=HOME_ASSISTANT_AGENT,
-                    device_id=user_input.device_id,
-                )
-                api = await llm.async_get_api(self.hass, llm_api, llm_context)
-                tools = list(api.tools)
-            except Exception as err:
-                _LOGGER.warning("Failed to get LLM API %s: %s", llm_api, err)
+            if isinstance(llm_api, str):
+                llm_api_ids = [llm_api]
+            else:
+                llm_api_ids = list(llm_api)
+            llm_context = llm.LLMContext(
+                platform=DOMAIN,
+                context=user_input.context,
+                user_prompt=user_input.text,
+                language=user_input.language,
+                assistant=HOME_ASSISTANT_AGENT,
+                device_id=user_input.device_id,
+            )
+            for api_id in llm_api_ids:
+                try:
+                    api = await llm.async_get_api(self.hass, api_id, llm_context)
+                    tools.extend(api.tools)
+                except Exception as err:
+                    _LOGGER.warning("Failed to get LLM API %s: %s", api_id, err)
 
         # Convert tools to Venice format
         venice_tools = []
@@ -399,9 +411,13 @@ class VeniceAIConversationEntity(ConversationEntity):
                     raise HomeAssistantError("Message list is empty before sending to API.")
 
                 disable_thinking = options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)
-                venice_params: dict[str, Any] | None = None
+                enable_web_search = options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
+                venice_params: dict[str, Any] = {}
                 if disable_thinking:
-                    venice_params = {"disable_thinking": True}
+                    venice_params["disable_thinking"] = True
+                if enable_web_search:
+                    venice_params["enable_web_search"] = "auto"
+                venice_params = venice_params or None
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,
                     messages=messages,
@@ -504,7 +520,9 @@ class VeniceAIConversationEntity(ConversationEntity):
                         tool_result = {"error": f"Tool {tool_name} not found"}
 
                     tool_result_content = ToolResultContent(
+                        agent_id="venice_ai",
                         tool_call_id=call_id,
+                        tool_name=tool_name,
                         tool_result=tool_result,
                     )
                     chat_log.content.append(tool_result_content)
@@ -563,9 +581,17 @@ class VeniceAIConversationEntity(ConversationEntity):
         intent_response = intent.IntentResponse(language=user_input.language)
         intent_response.async_set_speech(assistant_response_content)
 
+        # Signal HA to keep listening if the response ends with a question
+        # and the user has enabled extended conversation in options.
+        should_continue = (
+            options.get(CONF_CONTINUE_CONVERSATION, RECOMMENDED_CONTINUE_CONVERSATION)
+            and assistant_response_content.rstrip().endswith("?")
+        )
+
         return ConversationResult(
             conversation_id=chat_log.conversation_id,
             response=intent_response,
+            continue_conversation=should_continue,
         )
 
     @callback

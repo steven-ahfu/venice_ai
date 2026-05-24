@@ -21,11 +21,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .client import AsyncVeniceAIClient
 from .const import (
+    CONF_TTS_ENABLED,
     CONF_TTS_MODEL,
     CONF_TTS_RESPONSE_FORMAT,
     CONF_TTS_SPEED,
     CONF_TTS_VOICE,
     DOMAIN,
+    RECOMMENDED_TTS_ENABLED,
     RECOMMENDED_TTS_MODEL,
     RECOMMENDED_TTS_RESPONSE_FORMAT,
     RECOMMENDED_TTS_SPEED,
@@ -42,7 +44,15 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Venice AI TTS platform."""
+    """Set up Venice AI TTS platform.
+
+    Honors the per-entry ``CONF_TTS_ENABLED`` toggle so the user can keep
+    the integration loaded for conversation/AI-task while routing voice
+    output through a different TTS engine.
+    """
+    if not config_entry.options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
+        _LOGGER.debug("Venice AI TTS disabled by option; skipping entity setup")
+        return
     async_add_entities([VeniceAITTS(config_entry)])
 
 

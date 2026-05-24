@@ -189,6 +189,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
 
             chat_log = conversation.ChatLog(
+                hass=hass,
                 conversation_id=str(uuid.uuid4()),
                 content=[
                     conversation.UserContent(content=task_text)

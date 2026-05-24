@@ -53,13 +53,27 @@ VENICE_TTS_VOICES = [
     "ef_dora", "em_alex", "em_santa",
 ]
 
+# Automatically keep conversation open after a question response
+CONF_CONTINUE_CONVERSATION = "continue_conversation"
+RECOMMENDED_CONTINUE_CONVERSATION = False
+
+# Venice AI web search toggle
+CONF_ENABLE_WEB_SEARCH = "enable_web_search"
+RECOMMENDED_ENABLE_WEB_SEARCH = False
+
 # Venice AI STT options
+CONF_STT_ENABLED = "stt_enabled"
+RECOMMENDED_STT_ENABLED = True
 CONF_STT_MODEL = "stt_model"
 RECOMMENDED_STT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 CONF_STT_RESPONSE_FORMAT = "stt_response_format"
 RECOMMENDED_STT_RESPONSE_FORMAT = "json"
 CONF_STT_TIMESTAMPS = "stt_timestamps"
 RECOMMENDED_STT_TIMESTAMPS = False
+
+# Venice AI TTS toggle
+CONF_TTS_ENABLED = "tts_enabled"
+RECOMMENDED_TTS_ENABLED = True
 
 # Conversation tool iteration limit
 CONF_MAX_TOOL_ITERATIONS = "max_tool_iterations"
