@@ -54,7 +54,11 @@ from .const import (
     RECOMMENDED_ENABLE_WEB_SEARCH,
     CONF_CONTINUE_CONVERSATION,
     RECOMMENDED_CONTINUE_CONVERSATION,
+    CONF_CONTEXT_THRESHOLD,
+    CONF_FUNCTION_TOOLS,
+    CONF_SKILLS,
     DOMAIN,
+    RECOMMENDED_CONTEXT_THRESHOLD,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_MAX_TOOL_ITERATIONS,
@@ -86,32 +90,21 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate config entry to the current version."""
+    if entry.version == 1:
+        return True
+    _LOGGER.error(
+        "Unable to migrate config entry from version %s. Please recreate the integration.",
+        entry.version,
+    )
+    return False
+
+
 class VeniceAIConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Venice AI Conversation."""
 
     VERSION = 1
-
-    @staticmethod
-    async def async_migrate_entry(
-        hass: HomeAssistant, entry: ConfigEntry
-    ) -> bool:
-        """Migrate an old config entry to the current version.
-
-        This is a ``@staticmethod`` matching Home Assistant's core signature.
-        Receiving ``self`` is incorrect — when HA calls migration it passes
-        only ``hass`` and ``config_entry``.
-
-        Currently there is only version 1, so no migration is needed.
-        Future versions should handle data and options migration here.
-        """
-        if entry.version == 1:
-            # Current version — nothing to migrate
-            return True
-        _LOGGER.error(
-            "Unable to migrate config entry from version %s. Please recreate the integration.",
-            entry.version,
-        )
-        return False
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -325,14 +318,14 @@ class VeniceAIOptionsFlow(OptionsFlow):
         tts_models_options: list[SelectOptionDict],
         stt_models_options: list[SelectOptionDict],
         llm_api_options: list[SelectOptionDict] | None = None,
+        skill_options: list[SelectOptionDict] | None = None,
     ) -> vol.Schema:
         """Build the voluptuous options schema from fetched model lists.
 
-        STT and TTS sub-fields (model / voice / response format / etc.) are
-        conditionally included based on ``CONF_STT_ENABLED`` /
-        ``CONF_TTS_ENABLED``.  When a feature is disabled its sub-fields are
-        omitted from the schema entirely, so a stale stored value can never
-        be re-presented in the UI.
+        STT and TTS sub-fields are always included so re-enabling a toggle
+        immediately shows the configuration fields without needing a second
+        save.  Stale values are cleared in ``async_step_init`` when the toggle
+        is saved as off.
         """
         options = self.config_entry.options
         if llm_api_options is None:
@@ -346,9 +339,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
         if isinstance(suggested_llm_apis, str):
             suggested_llm_apis = [suggested_llm_apis]
         suggested_llm_apis = [a for a in suggested_llm_apis if a in valid_api_ids]
-
-        stt_enabled = options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED)
-        tts_enabled = options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)
 
         schema_fields: dict[Any, Any] = {
                 vol.Optional(
@@ -410,15 +400,43 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_ENABLE_WEB_SEARCH,
                     description={"suggested_value": options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)},
                 ): BooleanSelector(),
+                vol.Optional(CONF_FUNCTION_TOOLS, default=""): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
+                ),
+                vol.Optional(
+                    CONF_SKILLS,
+                    description={
+                        "suggested_value": [
+                            s for s in options.get(CONF_SKILLS, [])
+                            if skill_options and any(o["value"] == s for o in skill_options)
+                        ]
+                    },
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=skill_options or [],
+                        multiple=True,
+                    )
+                ),
                 vol.Optional(
                     CONF_MAX_TOOL_ITERATIONS,
                     description={"suggested_value": options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)},
                 ): NumberSelector(
                     NumberSelectorConfig(min=1, max=20, step=1, mode="slider")
                 ),
-                # TTS toggle (always shown).  Sub-fields are added below only
-                # when the toggle is on, so a disabled feature cannot present
-                # stale model / voice / format values back to the user.
+                vol.Optional(
+                    CONF_CONTEXT_THRESHOLD,
+                    description={"suggested_value": self.config_entry.options.get(
+                        CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD
+                    )},
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1000,
+                        max=200000,
+                        step=1000,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # TTS toggle — always shown; sub-fields always follow.
                 vol.Optional(
                     CONF_TTS_ENABLED,
                     description={"suggested_value": options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)},
@@ -468,7 +486,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
             ),
         }
 
-        # STT toggle (always shown), then sub-fields conditionally.
+        # STT toggle — always shown; sub-fields always follow.
         stt_toggle: dict[Any, Any] = {
             vol.Optional(
                 CONF_STT_ENABLED,
@@ -507,11 +525,9 @@ class VeniceAIOptionsFlow(OptionsFlow):
             ): BooleanSelector(),
         }
 
-        if tts_enabled:
-            schema_fields.update(tts_subfields)
+        schema_fields.update(tts_subfields)
         schema_fields.update(stt_toggle)
-        if stt_enabled:
-            schema_fields.update(stt_subfields)
+        schema_fields.update(stt_subfields)
 
         return vol.Schema(schema_fields)
 
@@ -551,29 +567,33 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     user_input[CONF_LLM_HASS_API] = filtered
 
             if not errors:
-                # Replace stored options with the form submission verbatim.
-                # vol.Optional fields the user cleared via the frontend's
-                # X-button are absent from user_input; on reopen they fall
-                # back to RECOMMENDED_* defaults via ``options.get(...)``.
-                #
-                # A ``{**old, **user_input}`` merge would resurrect the
-                # previously stored value of every cleared field — HA omits
-                # cleared Optional keys from the POST body, so the merge
-                # silently kept stale values (the v0.0.8.8 bug: STT Model
-                # reappearing every time the user X'd it out).
-                #
-                # Fields hidden by the conditional schema (STT/TTS sub-
-                # fields when their parent toggle is off) are also absent
-                # from user_input and therefore correctly dropped from
-                # storage, so disabling a feature cleans up its config.
-                # Venice's options flow is single-step with every field on
-                # one page, so user_input is always a complete snapshot of
-                # what's currently visible — no merge needed.
+                # When a feature toggle is off, clear its sub-fields so stale
+                # values don't persist in storage and confuse the next open.
+                if not user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
+                    for key in (CONF_TTS_MODEL, CONF_TTS_VOICE, CONF_TTS_RESPONSE_FORMAT, CONF_TTS_SPEED):
+                        user_input.pop(key, None)
+                if not user_input.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
+                    for key in (CONF_STT_MODEL, CONF_STT_RESPONSE_FORMAT, CONF_STT_TIMESTAMPS):
+                        user_input.pop(key, None)
+
                 return self.async_create_entry(title="", data=user_input)
 
         models, tts_models, stt_models, fetch_errors = await self._fetch_model_options()
         llm_api_options = self._fetch_llm_api_options()
-        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options)
+
+        # Load skills for the multi-select
+        skill_options: list[SelectOptionDict] = []
+        try:
+            from .skills import SkillManager
+            skill_manager = await SkillManager.async_get_instance(self.hass)
+            skill_options = [
+                SelectOptionDict(label=s.name, value=s.name)
+                for s in skill_manager.get_all_skills()
+            ]
+        except Exception:
+            _LOGGER.debug("Could not load skills for options form", exc_info=True)
+
+        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options, skill_options)
 
         # Merge fetch errors with validation errors
         if fetch_errors:
@@ -581,8 +601,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
-                options_schema, self.config_entry.options
-            ),
+            data_schema=options_schema,
             errors=errors,
         )

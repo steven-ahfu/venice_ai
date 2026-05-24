@@ -85,3 +85,9 @@ MAX_CHAT_HISTORY_SIZE = 20
 
 # Maximum audio buffer size for STT to prevent memory spikes (10 MB)
 MAX_STT_BUFFER_SIZE = 10 * 1024 * 1024
+
+CONF_FUNCTION_TOOLS = "function_tools"
+CONF_SKILLS = "skills"
+
+CONF_CONTEXT_THRESHOLD = "context_threshold"
+RECOMMENDED_CONTEXT_THRESHOLD = 40000

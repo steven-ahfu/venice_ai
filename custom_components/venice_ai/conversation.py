@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import yaml
 from collections import OrderedDict
 from typing import Any
 
@@ -44,7 +45,11 @@ from .const import (
     RECOMMENDED_ENABLE_WEB_SEARCH,
     CONF_CONTINUE_CONVERSATION,
     RECOMMENDED_CONTINUE_CONVERSATION,
+    CONF_CONTEXT_THRESHOLD,
+    CONF_FUNCTION_TOOLS,
+    CONF_SKILLS,
     DOMAIN,
+    RECOMMENDED_CONTEXT_THRESHOLD,
     HAS_VOLUPTUOUS_OPENAPI,
     MAX_CHAT_HISTORY_SIZE,
     MAX_CHAT_LOG_LENGTH,
@@ -54,6 +59,8 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+from .functions import get_function
+from .helpers import get_exposed_entities
 
 if HAS_VOLUPTUOUS_OPENAPI:
     from voluptuous_openapi import convert as voluptuous_convert  # type: ignore[import-untyped]
@@ -61,7 +68,14 @@ if HAS_VOLUPTUOUS_OPENAPI:
 _LOGGER = logging.getLogger(__name__)
 
 # Default system prompt for Venice AI
-DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant controlling a smart home. You can control lights, switches, climate, media players, and other devices. Always be concise and helpful."""
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant for {{ ha_name }}. "
+    "You can control lights, switches, climate, media players, and other smart home devices. "
+    "Always be concise and helpful."
+    "{% if skills %}\n\n## Available Skills\n"
+    "{% for skill in skills %}### {{ skill.name }}\n{{ skill.content }}\n{% endfor %}"
+    "{% endif %}"
+)
 
 
 def _strip_thinking(text: str) -> str:
@@ -273,6 +287,29 @@ def _trim_chat_log(chat_log: ChatLog) -> None:
     chat_log.content.extend(trimmed)
 
 
+def _truncate_message_history(chat_log: ChatLog) -> None:
+    """Clear middle of history on token overflow across multiple turns.
+
+    Fires reactively after an API response reports total_tokens exceeding
+    the configured threshold. Only takes effect when multiple user messages
+    have accumulated (last_user_idx > 1). Complements the count-based
+    _trim_chat_log() which runs proactively before each API call.
+    """
+    messages = chat_log.content
+    last_user_idx = None
+    for i in reversed(range(len(messages))):
+        if isinstance(messages[i], UserContent):
+            last_user_idx = i
+            break
+    if last_user_idx is not None and last_user_idx > 1:
+        removed = last_user_idx - 1
+        del messages[1:last_user_idx]
+        _LOGGER.info(
+            "Token threshold exceeded; removed %d messages from conversation history",
+            removed,
+        )
+
+
 class VeniceAIConversationEntity(ConversationEntity):
     """Venice AI conversation entity."""
 
@@ -339,7 +376,7 @@ class VeniceAIConversationEntity(ConversationEntity):
     @property
     def supported_options(self) -> list[str]:
         """Return list of supported options."""
-        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING, CONF_ENABLE_WEB_SEARCH, CONF_CONTINUE_CONVERSATION]
+        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING, CONF_ENABLE_WEB_SEARCH, CONF_CONTINUE_CONVERSATION, CONF_CONTEXT_THRESHOLD]
 
     async def async_process(
         self, user_input: ConversationInput
@@ -358,7 +395,34 @@ class VeniceAIConversationEntity(ConversationEntity):
         # template functions (e.g. now(), states(), area_entities()) work.
         try:
             prompt_template = Template(prompt_template_str, self.hass)
-            system_prompt = prompt_template.async_render()
+            exposed_entities = get_exposed_entities(self.hass)
+
+            # Load enabled skills and build skills context for system prompt
+            skills_context: list[dict[str, str]] = []
+            enabled_skill_names = options.get(CONF_SKILLS, [])
+            if enabled_skill_names:
+                try:
+                    from .skills import SkillManager
+                    skill_manager = await SkillManager.async_get_instance(self.hass)
+                    for skill in skill_manager.get_enabled_skills(enabled_skill_names):
+                        skills_context.append({
+                            "name": skill.name,
+                            "description": skill.description,
+                            "content": skill.content,
+                        })
+                except Exception as skills_err:
+                    _LOGGER.warning("Failed to load skills: %s", skills_err)
+
+            system_prompt = prompt_template.async_render(
+                {
+                    "ha_name": self.hass.config.location_name,
+                    "exposed_entities": exposed_entities,
+                    "current_device_id": user_input.device_id,
+                    "user_input": user_input,
+                    "skills": skills_context,
+                },
+                parse_result=False,
+            )
         except TemplateError as err:
             _LOGGER.error("Error rendering prompt template: %s", err)
             raise HomeAssistantError(f"Error rendering prompt: {err}") from err
@@ -366,6 +430,7 @@ class VeniceAIConversationEntity(ConversationEntity):
         # Set up LLM API(s) if configured.  Accepts either a list of API ids
         # (new multi-select form) or a single string (legacy stored value).
         tools: list[llm.Tool] = []
+        llm_context: llm.LLMContext | None = None
         if llm_api:
             if isinstance(llm_api, str):
                 llm_api_ids = [llm_api]
@@ -404,6 +469,43 @@ class VeniceAIConversationEntity(ConversationEntity):
             else:
                 tool_dict["function"]["parameters"] = parameters_schema or {"type": "object", "properties": {}}
             venice_tools.append(tool_dict)
+
+        # Load and register custom function tools from options YAML
+        function_configs: list[dict] = []
+        function_tools_yaml = options.get(CONF_FUNCTION_TOOLS, "")
+        if function_tools_yaml and function_tools_yaml.strip():
+            try:
+                parsed = yaml.safe_load(function_tools_yaml)
+                if isinstance(parsed, list):
+                    raw_configs = parsed
+                elif isinstance(parsed, dict):
+                    raw_configs = [parsed]
+                else:
+                    raw_configs = []
+                for fc in raw_configs:
+                    if not isinstance(fc, dict):
+                        continue
+                    ftype = fc.get("type")
+                    if not ftype:
+                        continue
+                    try:
+                        fn = get_function(ftype)
+                        fn.validate_schema(fc)
+                        function_configs.append(fc)
+                        # Build Venice tool spec
+                        tool_dict = {
+                            "type": "function",
+                            "function": {
+                                "name": fc["name"],
+                                "description": fc.get("description", ""),
+                                "parameters": fc.get("parameters", {"type": "object", "properties": {}}),
+                            },
+                        }
+                        venice_tools.append(tool_dict)
+                    except Exception as fc_err:
+                        _LOGGER.warning("Skipping invalid function tool '%s': %s", fc.get("name"), fc_err)
+            except Exception as yaml_err:
+                _LOGGER.error("Failed to parse function_tools YAML: %s", yaml_err)
 
         # Retrieve existing chat log or create a new one, then append the new user message.
         # History is persisted across calls so the model has full multi-turn context.
@@ -479,6 +581,13 @@ class VeniceAIConversationEntity(ConversationEntity):
                     text_content = _strip_thinking(text_content)
                 tool_calls = message.get("tool_calls", [])
 
+                # Reactive token-based truncation: clear history middle if context is filling up
+                usage = response_data.get("usage", {}) if isinstance(response_data, dict) else {}
+                total_tokens = usage.get("total_tokens", 0)
+                context_threshold = options.get(CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD)
+                if total_tokens > context_threshold:
+                    _truncate_message_history(chat_log)
+
                 if not tool_calls:
                     assistant_response_content = text_content
                     break
@@ -527,10 +636,12 @@ class VeniceAIConversationEntity(ConversationEntity):
                         )
                         continue
 
-                    # Find matching tool and invoke via the public HA LLM API
+                    # Find matching tool: first check HA LLM API tools, then custom function configs
                     tool_result = None
+                    matched_ha_tool = False
                     for tool in tools:
                         if tool.name == tool_name:
+                            matched_ha_tool = True
                             try:
                                 tool_input = llm.ToolInput(
                                     id=call_id,
@@ -548,8 +659,22 @@ class VeniceAIConversationEntity(ConversationEntity):
                                 tool_result = {"error": str(tool_err)}
                             break
 
+                    if not matched_ha_tool:
+                        # Check custom function configs
+                        for fc in function_configs:
+                            if fc.get("name") == tool_name:
+                                try:
+                                    fn = get_function(fc["type"])
+                                    tool_result = await fn.execute(
+                                        self.hass, fc, tool_args, llm_context, exposed_entities
+                                    )
+                                except Exception as fn_err:
+                                    _LOGGER.warning("Function %s failed: %s", tool_name, fn_err)
+                                    tool_result = {"error": str(fn_err)}
+                                break
+
                     if tool_result is None:
-                        _LOGGER.warning("Tool %s not found", tool_name)
+                        _LOGGER.warning("Tool %s not found in HA tools or custom functions", tool_name)
                         tool_result = {"error": f"Tool {tool_name} not found"}
 
                     tool_result_content = ToolResultContent(

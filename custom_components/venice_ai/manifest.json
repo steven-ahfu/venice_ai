@@ -1,11 +1,12 @@
 {
     "domain": "venice_ai",
     "name": "VeniceAI Conversation",
-    "version": "0.0.8.9",
+    "version": "0.0.9.1",
     "documentation": "https://github.com/grasponcrypto/venice_ai",
     "issue_tracker": "https://github.com/grasponcrypto/venice_ai/issues",
     "requirements": [
-        "voluptuous-openapi>=0.0.4"
+        "voluptuous-openapi>=0.0.4",
+        "beautifulsoup4>=4.12.0"
     ],
     "dependencies": ["conversation"],
     "after_dependencies": ["ai_task", "assist_pipeline", "intent"],

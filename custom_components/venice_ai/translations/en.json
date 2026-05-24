@@ -24,6 +24,11 @@
             "init": {
                 "title": "Venice AI Options",
                 "description": "Configure Venice AI settings. Only models with function calling support are shown.",
+                "data_description": {
+                    "function_tools": "Define custom tools as YAML. Each tool needs: name, type, description. Supported types: native, template, script, rest, scrape, bash, read_file, write_file, edit_file, sqlite, composite.",
+                    "skills": "Select skills to inject into the system prompt. Place SKILL.md files in config/venice_ai/skills/<name>/ and reload skills.",
+                    "context_threshold": "When total tokens in a conversation exceed this value, older messages are removed to free context window space. Default: 40000."
+                },
                 "data": {
                     "chat_model": "AI Model",
                     "prompt": "System Prompt",
@@ -34,13 +39,16 @@
                     "strip_thinking_response": "Strip thinking response (for reasoning models)",
                     "disable_thinking": "Disable thinking (for reasoning models)",
                     "max_tool_iterations": "Max Tool Iterations",
+                    "context_threshold": "Context Token Threshold",
                     "tts_model": "TTS Model",
                     "tts_voice": "TTS Voice",
                     "tts_response_format": "TTS Response Format",
                     "tts_speed": "TTS Speed",
+                    "function_tools": "Custom Function Tools (YAML)",
                     "stt_model": "STT Model",
                     "stt_response_format": "STT Response Format",
-                    "stt_timestamps": "STT Include Timestamps"
+                    "stt_timestamps": "STT Include Timestamps",
+                    "skills": "Enabled Skills"
                 }
             }
         }
@@ -123,6 +131,10 @@
         "conversation": {
             "name": "VeniceAI Conversation",
             "description": "Conversation agent"
+        },
+        "reload_skills": {
+            "name": "Reload Skills",
+            "description": "Reload Venice AI skills from the skills directory on disk."
         }
     }
 }
