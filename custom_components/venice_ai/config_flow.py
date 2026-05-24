@@ -326,7 +326,14 @@ class VeniceAIOptionsFlow(OptionsFlow):
         stt_models_options: list[SelectOptionDict],
         llm_api_options: list[SelectOptionDict] | None = None,
     ) -> vol.Schema:
-        """Build the voluptuous options schema from fetched model lists."""
+        """Build the voluptuous options schema from fetched model lists.
+
+        STT and TTS sub-fields (model / voice / response format / etc.) are
+        conditionally included based on ``CONF_STT_ENABLED`` /
+        ``CONF_TTS_ENABLED``.  When a feature is disabled its sub-fields are
+        omitted from the schema entirely, so a stale stored value can never
+        be re-presented in the UI.
+        """
         options = self.config_entry.options
         if llm_api_options is None:
             llm_api_options = []
@@ -339,8 +346,11 @@ class VeniceAIOptionsFlow(OptionsFlow):
         if isinstance(suggested_llm_apis, str):
             suggested_llm_apis = [suggested_llm_apis]
         suggested_llm_apis = [a for a in suggested_llm_apis if a in valid_api_ids]
-        return vol.Schema(
-            {
+
+        stt_enabled = options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED)
+        tts_enabled = options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)
+
+        schema_fields: dict[Any, Any] = {
                 vol.Optional(
                     CONF_PROMPT,
                     description={"suggested_value": options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)},
@@ -406,86 +416,104 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 ): NumberSelector(
                     NumberSelectorConfig(min=1, max=20, step=1, mode="slider")
                 ),
-                # TTS options
+                # TTS toggle (always shown).  Sub-fields are added below only
+                # when the toggle is on, so a disabled feature cannot present
+                # stale model / voice / format values back to the user.
                 vol.Optional(
                     CONF_TTS_ENABLED,
                     description={"suggested_value": options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)},
                 ): BooleanSelector(),
-                vol.Optional(
-                    CONF_TTS_MODEL,
-                    description={"suggested_value": options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=tts_models_options,
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(
-                    CONF_TTS_VOICE,
-                    description={"suggested_value": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(label=voice, value=voice)
-                            for voice in VENICE_TTS_VOICES
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(
-                    CONF_TTS_RESPONSE_FORMAT,
-                    description={"suggested_value": options.get(CONF_TTS_RESPONSE_FORMAT, RECOMMENDED_TTS_RESPONSE_FORMAT)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(label="MP3", value="mp3"),
-                            SelectOptionDict(label="WAV", value="wav"),
-                            SelectOptionDict(label="OGG", value="ogg"),
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(
-                    CONF_TTS_SPEED,
-                    description={"suggested_value": options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)},
-                ): NumberSelector(
-                    NumberSelectorConfig(min=0.25, max=4.0, step=0.25, mode="slider")
-                ),
-                # STT options
-                vol.Optional(
-                    CONF_STT_ENABLED,
-                    description={"suggested_value": options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED)},
-                ): BooleanSelector(),
-                vol.Optional(
-                    CONF_STT_MODEL,
-                    description={"suggested_value": options.get(CONF_STT_MODEL, RECOMMENDED_STT_MODEL)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=stt_models_options,
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(
-                    CONF_STT_RESPONSE_FORMAT,
-                    description={"suggested_value": options.get(CONF_STT_RESPONSE_FORMAT, RECOMMENDED_STT_RESPONSE_FORMAT)},
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(label="JSON", value="json"),
-                            SelectOptionDict(label="Text", value="text"),
-                            SelectOptionDict(label="SRT", value="srt"),
-                            SelectOptionDict(label="Verbose JSON", value="verbose_json"),
-                            SelectOptionDict(label="VTT", value="vtt"),
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(
-                    CONF_STT_TIMESTAMPS,
-                    description={"suggested_value": options.get(CONF_STT_TIMESTAMPS, RECOMMENDED_STT_TIMESTAMPS)},
-                ): BooleanSelector(),
-            }
-        )
+        }
+
+        tts_subfields: dict[Any, Any] = {
+            vol.Optional(
+                CONF_TTS_MODEL,
+                description={"suggested_value": options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)},
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=tts_models_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_TTS_VOICE,
+                description={"suggested_value": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)},
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(label=voice, value=voice)
+                        for voice in VENICE_TTS_VOICES
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_TTS_RESPONSE_FORMAT,
+                description={"suggested_value": options.get(CONF_TTS_RESPONSE_FORMAT, RECOMMENDED_TTS_RESPONSE_FORMAT)},
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(label="MP3", value="mp3"),
+                        SelectOptionDict(label="WAV", value="wav"),
+                        SelectOptionDict(label="OGG", value="ogg"),
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_TTS_SPEED,
+                description={"suggested_value": options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)},
+            ): NumberSelector(
+                NumberSelectorConfig(min=0.25, max=4.0, step=0.25, mode="slider")
+            ),
+        }
+
+        # STT toggle (always shown), then sub-fields conditionally.
+        stt_toggle: dict[Any, Any] = {
+            vol.Optional(
+                CONF_STT_ENABLED,
+                description={"suggested_value": options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED)},
+            ): BooleanSelector(),
+        }
+
+        stt_subfields: dict[Any, Any] = {
+            vol.Optional(
+                CONF_STT_MODEL,
+                description={"suggested_value": options.get(CONF_STT_MODEL, RECOMMENDED_STT_MODEL)},
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=stt_models_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_STT_RESPONSE_FORMAT,
+                description={"suggested_value": options.get(CONF_STT_RESPONSE_FORMAT, RECOMMENDED_STT_RESPONSE_FORMAT)},
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(label="JSON", value="json"),
+                        SelectOptionDict(label="Text", value="text"),
+                        SelectOptionDict(label="SRT", value="srt"),
+                        SelectOptionDict(label="Verbose JSON", value="verbose_json"),
+                        SelectOptionDict(label="VTT", value="vtt"),
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_STT_TIMESTAMPS,
+                description={"suggested_value": options.get(CONF_STT_TIMESTAMPS, RECOMMENDED_STT_TIMESTAMPS)},
+            ): BooleanSelector(),
+        }
+
+        if tts_enabled:
+            schema_fields.update(tts_subfields)
+        schema_fields.update(stt_toggle)
+        if stt_enabled:
+            schema_fields.update(stt_subfields)
+
+        return vol.Schema(schema_fields)
 
     def _fetch_llm_api_options(self) -> list[SelectOptionDict]:
         """Return a list of registered HA LLM APIs as SelectOptionDicts.
@@ -523,17 +551,25 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     user_input[CONF_LLM_HASS_API] = filtered
 
             if not errors:
-                # Merge user_input into the existing options so fields the
-                # form didn't include (e.g. STT/TTS settings that the user
-                # didn't touch on this visit) aren't wiped out.  This matches
-                # the pattern in HA core's openai_conversation config flow.
-                merged: dict[str, Any] = {**self.config_entry.options, **user_input}
-                # If the user explicitly cleared CONF_LLM_HASS_API on this
-                # form submission, drop it from merged too rather than letting
-                # the previous value resurrect via the merge.
-                if CONF_LLM_HASS_API not in user_input:
-                    merged.pop(CONF_LLM_HASS_API, None)
-                return self.async_create_entry(title="", data=merged)
+                # Replace stored options with the form submission verbatim.
+                # vol.Optional fields the user cleared via the frontend's
+                # X-button are absent from user_input; on reopen they fall
+                # back to RECOMMENDED_* defaults via ``options.get(...)``.
+                #
+                # A ``{**old, **user_input}`` merge would resurrect the
+                # previously stored value of every cleared field — HA omits
+                # cleared Optional keys from the POST body, so the merge
+                # silently kept stale values (the v0.0.8.8 bug: STT Model
+                # reappearing every time the user X'd it out).
+                #
+                # Fields hidden by the conditional schema (STT/TTS sub-
+                # fields when their parent toggle is off) are also absent
+                # from user_input and therefore correctly dropped from
+                # storage, so disabling a feature cleans up its config.
+                # Venice's options flow is single-step with every field on
+                # one page, so user_input is always a complete snapshot of
+                # what's currently visible — no merge needed.
+                return self.async_create_entry(title="", data=user_input)
 
         models, tts_models, stt_models, fetch_errors = await self._fetch_model_options()
         llm_api_options = self._fetch_llm_api_options()
