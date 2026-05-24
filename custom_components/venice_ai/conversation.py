@@ -439,7 +439,6 @@ class VeniceAIConversationEntity(ConversationEntity):
             llm_context = llm.LLMContext(
                 platform=DOMAIN,
                 context=user_input.context,
-                user_prompt=user_input.text,
                 language=user_input.language,
                 assistant=HOME_ASSISTANT_AGENT,
                 device_id=user_input.device_id,
@@ -647,13 +646,10 @@ class VeniceAIConversationEntity(ConversationEntity):
                                     id=call_id,
                                     tool_name=tool_name,
                                     tool_args=tool_args,
-                                    platform=DOMAIN,
-                                    context=user_input.context,
-                                    user_prompt=user_input.text,
-                                    assistant=HOME_ASSISTANT_AGENT,
-                                    device_id=user_input.device_id,
                                 )
-                                tool_result = await tool.async_call(self.hass, tool_input)
+                                tool_result = await tool.async_call(
+                                    self.hass, tool_input, llm_context
+                                )
                             except Exception as tool_err:
                                 _LOGGER.warning("Tool %s failed: %s", tool_name, tool_err)
                                 tool_result = {"error": str(tool_err)}
