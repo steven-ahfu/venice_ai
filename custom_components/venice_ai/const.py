@@ -53,6 +53,10 @@ VENICE_TTS_VOICES = [
     "ef_dora", "em_alex", "em_santa",
 ]
 
+# Automatically keep conversation open after a question response
+CONF_CONTINUE_CONVERSATION = "continue_conversation"
+RECOMMENDED_CONTINUE_CONVERSATION = False
+
 # Venice AI web search option ("off" / "auto" / "on")
 CONF_ENABLE_WEB_SEARCH = "enable_web_search"
 RECOMMENDED_ENABLE_WEB_SEARCH = "off"

@@ -48,6 +48,8 @@ from .const import (
     CONF_STT_TIMESTAMPS,
     CONF_ENABLE_WEB_SEARCH,
     RECOMMENDED_ENABLE_WEB_SEARCH,
+    CONF_CONTINUE_CONVERSATION,
+    RECOMMENDED_CONTINUE_CONVERSATION,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -365,6 +367,10 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_DISABLE_THINKING,
                     description={"suggested_value": options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)},
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_CONTINUE_CONVERSATION,
+                    description={"suggested_value": options.get(CONF_CONTINUE_CONVERSATION, RECOMMENDED_CONTINUE_CONVERSATION)},
                 ): BooleanSelector(),
                 vol.Optional(
                     CONF_ENABLE_WEB_SEARCH,

@@ -41,6 +41,8 @@ from .const import (
     RECOMMENDED_DISABLE_THINKING,
     CONF_ENABLE_WEB_SEARCH,
     RECOMMENDED_ENABLE_WEB_SEARCH,
+    CONF_CONTINUE_CONVERSATION,
+    RECOMMENDED_CONTINUE_CONVERSATION,
     DOMAIN,
     HAS_VOLUPTUOUS_OPENAPI,
     MAX_CHAT_HISTORY_SIZE,
@@ -569,9 +571,17 @@ class VeniceAIConversationEntity(ConversationEntity):
         intent_response = intent.IntentResponse(language=user_input.language)
         intent_response.async_set_speech(assistant_response_content)
 
+        # Signal HA to keep listening if the response ends with a question
+        # and the user has enabled extended conversation in options.
+        should_continue = (
+            options.get(CONF_CONTINUE_CONVERSATION, RECOMMENDED_CONTINUE_CONVERSATION)
+            and assistant_response_content.rstrip().endswith("?")
+        )
+
         return ConversationResult(
             conversation_id=chat_log.conversation_id,
             response=intent_response,
+            continue_conversation=should_continue,
         )
 
     @callback
