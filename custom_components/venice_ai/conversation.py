@@ -514,7 +514,7 @@ class VeniceAIConversationEntity(ConversationEntity):
         assistant_response_content = None
         text_content = ""
 
-        max_tool_iterations = options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)
+        max_tool_iterations = int(options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS))
 
         try:
             _trim_chat_log(chat_log)
