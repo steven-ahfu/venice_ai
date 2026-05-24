@@ -197,8 +197,15 @@ class VeniceAIConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> VeniceAIOptionsFlow:
-        """Get the options flow for this handler."""
-        return VeniceAIOptionsFlow(config_entry)
+        """Get the options flow for this handler.
+
+        Home Assistant injects ``self.config_entry`` automatically on the
+        OptionsFlow base class (it's looked up by handler/entry_id at access
+        time), so we must NOT pass ``config_entry`` to our constructor — the
+        base ``OptionsFlow`` no longer accepts it and ``object.__init__`` then
+        raises ``TypeError``, which the frontend surfaces as a 500.
+        """
+        return VeniceAIOptionsFlow()
 
 
 class VeniceAIOptionsFlow(OptionsFlow):
