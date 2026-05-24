@@ -10,6 +10,7 @@ from typing import Any
 from homeassistant.components.conversation import (
     HOME_ASSISTANT_AGENT,
     ConversationEntity,
+    ConversationEntityFeature,
     ConversationInput,
     ConversationResult,
     ChatLog,
@@ -61,9 +62,6 @@ _LOGGER = logging.getLogger(__name__)
 
 # Default system prompt for Venice AI
 DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant controlling a smart home. You can control lights, switches, climate, media players, and other devices. Always be concise and helpful."""
-
-# Maximum number of tool iterations to prevent infinite loops
-MAX_TOOL_ITERATIONS = 5
 
 
 def _strip_thinking(text: str) -> str:
@@ -224,7 +222,23 @@ def _convert_chat_log_to_venice_messages(
             messages.append({"role": "user", "content": msg.content})
         elif isinstance(msg, AssistantContent):
             content = _strip_thinking(msg.content) if strip_thinking else msg.content
-            messages.append({"role": "assistant", "content": content})
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.tool_name,
+                            "arguments": json.dumps(tc.tool_args),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            # Guard: some APIs reject empty tool_calls arrays
+            if assistant_msg.get("tool_calls") == []:
+                assistant_msg.pop("tool_calls")
+            messages.append(assistant_msg)
         elif isinstance(msg, ToolResultContent):
             messages.append({
                 "role": "tool",
@@ -232,7 +246,7 @@ def _convert_chat_log_to_venice_messages(
                 "content": json.dumps(msg.tool_result),
             })
         elif isinstance(msg, SystemContent):
-            messages.append({"role": "system", "content": msg.content})
+            _LOGGER.debug("Skipping SystemContent in chat_log to avoid duplicate system prompt")
         else:
             _LOGGER.warning("Unsupported message type for Venice conversion: %s", type(msg))
 
@@ -261,6 +275,8 @@ def _trim_chat_log(chat_log: ChatLog) -> None:
 
 class VeniceAIConversationEntity(ConversationEntity):
     """Venice AI conversation entity."""
+
+    _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the entity."""
@@ -323,7 +339,7 @@ class VeniceAIConversationEntity(ConversationEntity):
     @property
     def supported_options(self) -> list[str]:
         """Return list of supported options."""
-        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING]
+        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING, CONF_ENABLE_WEB_SEARCH, CONF_CONTINUE_CONVERSATION]
 
     async def async_process(
         self, user_input: ConversationInput
@@ -412,12 +428,13 @@ class VeniceAIConversationEntity(ConversationEntity):
 
                 disable_thinking = options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)
                 enable_web_search = options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
-                venice_params: dict[str, Any] = {}
-                if disable_thinking:
-                    venice_params["disable_thinking"] = True
-                if enable_web_search:
-                    venice_params["enable_web_search"] = "auto"
-                venice_params = venice_params or None
+                venice_params: dict[str, Any] | None = None
+                if disable_thinking or enable_web_search:
+                    venice_params = {}
+                    if disable_thinking:
+                        venice_params["disable_thinking"] = True
+                    if enable_web_search:
+                        venice_params["enable_web_search"] = "auto"
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,
                     messages=messages,
@@ -467,9 +484,24 @@ class VeniceAIConversationEntity(ConversationEntity):
                     break
 
                 # Process tool calls
+                # Build ToolInput list for AssistantContent.tool_calls so history is correct
+                tool_inputs_for_history: list[llm.ToolInput] = []
+                for tc in tool_calls:
+                    cid = tc.get("id")
+                    fn = tc.get("function", {})
+                    tname = fn.get("name")
+                    try:
+                        targs = json.loads(fn.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        targs = {}
+                    if cid and tname:
+                        tool_inputs_for_history.append(
+                            llm.ToolInput(id=cid, tool_name=tname, tool_args=targs)
+                        )
                 assistant_content = AssistantContent(
-                    agent_id="venice_ai",
+                    agent_id=self.entity_id,
                     content=text_content,
+                    tool_calls=tool_inputs_for_history or None,
                 )
                 chat_log.content.append(assistant_content)
 
@@ -501,6 +533,7 @@ class VeniceAIConversationEntity(ConversationEntity):
                         if tool.name == tool_name:
                             try:
                                 tool_input = llm.ToolInput(
+                                    id=call_id,
                                     tool_name=tool_name,
                                     tool_args=tool_args,
                                     platform=DOMAIN,
@@ -520,7 +553,7 @@ class VeniceAIConversationEntity(ConversationEntity):
                         tool_result = {"error": f"Tool {tool_name} not found"}
 
                     tool_result_content = ToolResultContent(
-                        agent_id="venice_ai",
+                        agent_id=self.entity_id,
                         tool_call_id=call_id,
                         tool_name=tool_name,
                         tool_result=tool_result,
@@ -573,7 +606,7 @@ class VeniceAIConversationEntity(ConversationEntity):
 
         # Persist the final assistant turn so subsequent calls see the full history.
         chat_log.content.append(
-            AssistantContent(agent_id="venice_ai", content=assistant_response_content)
+            AssistantContent(agent_id=self.entity_id, content=assistant_response_content)
         )
         _trim_chat_log(chat_log)
 
@@ -596,16 +629,8 @@ class VeniceAIConversationEntity(ConversationEntity):
 
     @callback
     def async_added_to_hass(self) -> None:
-        """Register update listener."""
-        self.entry.async_on_unload(
-            self.entry.add_update_listener(self._async_entry_updated)
-        )
-
-    @callback
-    def _async_entry_updated(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle options update."""
-        self.entry = entry
-        self._client = entry.runtime_data.client
+        """Write state once added so entity_id is resolved before first use."""
+        self.async_write_ha_state()
 
 
 async def async_setup_entry(
