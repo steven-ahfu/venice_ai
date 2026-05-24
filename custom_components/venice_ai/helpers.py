@@ -11,7 +11,9 @@ from homeassistant.helpers import entity_registry as er
 def get_exposed_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Return a list of entities exposed to the conversation agent."""
     try:
-        from homeassistant.components.conversation import async_should_expose
+        from homeassistant.components.homeassistant.exposed_entities import (
+            async_should_expose,
+        )
     except ImportError:
         return []
 

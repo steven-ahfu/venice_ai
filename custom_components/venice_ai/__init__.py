@@ -178,6 +178,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             structure = call.data.get("structure")
 
             gen_task = ai_task.GenDataTask(
+                name="Venice AI Task",
                 instructions=task_text,
                 structure=structure,
             )
