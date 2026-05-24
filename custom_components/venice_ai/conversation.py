@@ -299,8 +299,10 @@ class VeniceAIConversationEntity(ConversationEntity):
             _LOGGER.debug("Resuming existing conversation %s (%d messages)", cid, len(self._chat_logs[cid].content))
             return self._chat_logs[cid]
 
-        # New conversation
-        chat_log = ChatLog(conversation_id=cid, content=[])
+        # New conversation. ChatLog requires `hass` as its first dataclass field —
+        # without it instantiation raises TypeError synchronously, which HA's
+        # pipeline surfaces as "Unexpected error during intent recognition".
+        chat_log = ChatLog(hass=self.hass, conversation_id=cid, content=[])
         self._chat_logs[cid] = chat_log
         # Evict least-recently-used if over the limit
         if len(self._chat_logs) > MAX_CHAT_HISTORY_SIZE:
@@ -512,7 +514,9 @@ class VeniceAIConversationEntity(ConversationEntity):
                         tool_result = {"error": f"Tool {tool_name} not found"}
 
                     tool_result_content = ToolResultContent(
+                        agent_id="venice_ai",
                         tool_call_id=call_id,
+                        tool_name=tool_name,
                         tool_result=tool_result,
                     )
                     chat_log.content.append(tool_result_content)
