@@ -1,7 +1,7 @@
 {
     "domain": "venice_ai",
     "name": "VeniceAI Conversation",
-    "version": "0.0.9.1",
+    "version": "0.0.9.2",
     "documentation": "https://github.com/grasponcrypto/venice_ai",
     "issue_tracker": "https://github.com/grasponcrypto/venice_ai/issues",
     "requirements": [
