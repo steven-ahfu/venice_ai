@@ -262,6 +262,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         supports_response=SupportsResponse.ONLY,
     )
 
+    async def reload_tools(call: ServiceCall) -> ServiceResponse:
+        """Reload Venice AI tools from bundled defaults + user file."""
+        from .tools import ToolManager
+        manager = await ToolManager.async_get_instance(hass)
+        count = await manager.async_load_tools()
+        return {"loaded_tools": count}
+
+    hass.services.async_register(
+        DOMAIN,
+        "reload_tools",
+        reload_tools,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
     return True
 
 

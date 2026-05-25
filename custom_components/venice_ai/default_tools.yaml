@@ -1,0 +1,108 @@
+# Default tools bundled with the Venice AI integration.
+#
+# Users can add tools or override these by creating
+# /config/venice_ai/tools.yaml. That file uses the same YAML schema and is
+# merged with these defaults (custom tools take precedence on name conflict).
+#
+# Available types: native, template, script, rest, scrape, bash, read_file,
+# write_file, edit_file, sqlite, composite.
+
+- name: get_current_weather
+  type: rest
+  description: >-
+    Get the current weather, including temperature, conditions, humidity and a
+    short forecast for a given city. Use this whenever the user asks about
+    weather, rain, temperature, etc.
+  parameters:
+    type: object
+    properties:
+      location:
+        type: string
+        description: City name, optionally followed by a country (e.g. "Tokyo" or "Paris, France").
+    required:
+      - location
+  url: "https://wttr.in/{{ location | urlencode }}?format=j1"
+  method: GET
+
+- name: get_current_time
+  type: template
+  description: >-
+    Return the current local date and time of the Home Assistant instance.
+    Use whenever the user asks "what time is it", "what's today's date", or
+    any question that depends on the current moment.
+  parameters:
+    type: object
+    properties: {}
+  value_template: >-
+    {{ now().strftime('%A, %B %d, %Y %I:%M %p %Z') }}
+
+- name: get_entity_state
+  type: template
+  description: >-
+    Return the current state and unit of a single Home Assistant entity. Use
+    when the user asks about a specific device or sensor.
+  parameters:
+    type: object
+    properties:
+      entity_id:
+        type: string
+        description: Full entity id, e.g. "sensor.living_room_temperature".
+    required:
+      - entity_id
+  value_template: >-
+    {% set s = states(entity_id) %}
+    {% if s in ['unknown', 'unavailable', None] %}
+      Entity {{ entity_id }} is {{ s }}.
+    {% else %}
+      {{ entity_id }} is {{ s }}{% if state_attr(entity_id, 'unit_of_measurement') %} {{ state_attr(entity_id, 'unit_of_measurement') }}{% endif %}.
+    {% endif %}
+
+- name: execute_service
+  type: native
+  operation: execute_service
+  description: >-
+    Call any Home Assistant service to control a device or trigger an
+    automation: turn on a light, set a thermostat, run a script, send a
+    notification via notify.<service>, etc. `domain` is the service domain
+    (e.g. light, switch, script, notify). `service` is the service name
+    (e.g. turn_on, turn_off, toggle). `service_data` carries the payload
+    including `entity_id` and any options.
+  parameters:
+    type: object
+    properties:
+      domain:
+        type: string
+        description: Service domain, e.g. "light", "switch", "notify".
+      service:
+        type: string
+        description: Service name, e.g. "turn_on" or "mobile_app_phone".
+      service_data:
+        type: object
+        description: Payload such as entity_id, brightness, message, title.
+    required:
+      - domain
+      - service
+
+- name: get_history
+  type: native
+  operation: get_history
+  description: >-
+    Retrieve recent state history for one or more entities. Use for questions
+    like "when did the front door open last?" or "what was the temperature
+    an hour ago?".
+  parameters:
+    type: object
+    properties:
+      entity_ids:
+        type: array
+        items:
+          type: string
+        description: Entity ids to query.
+      start_time:
+        type: string
+        description: ISO 8601 start time. Defaults to 24 hours ago.
+      end_time:
+        type: string
+        description: ISO 8601 end time. Defaults to now.
+    required:
+      - entity_ids

@@ -23,9 +23,8 @@
       "step": {
         "init": {
           "title": "Venice AI Options",
-          "description": "Configure Venice AI settings. Only models with function calling support are shown.",
+          "description": "Configure Venice AI settings. Only models with function calling support are shown.\n\n**Tools loaded ({tools_path}):** {tools_names}\n\nTo add or override tools, create that file with a YAML list. Bundled tools come from the integration and are always available.",
           "data_description": {
-            "function_tools": "Define custom tools as YAML. Each tool needs: name, type, description. Supported types: native, template, script, rest, scrape, bash, read_file, write_file, edit_file, sqlite, composite.",
             "skills": "Select skills to inject into the system prompt. Place SKILL.md files in config/venice_ai/skills/[name]/ and reload skills.",
             "context_threshold": "When total tokens in a conversation exceed this value, older messages are removed to free context window space. Default: 40000."
           },
@@ -40,7 +39,6 @@
             "disable_thinking": "Disable thinking (for reasoning models)",
             "continue_conversation": "Keep listening after questions (extended conversation)",
             "enable_web_search": "Enable Web Search",
-            "function_tools": "Custom Function Tools (YAML)",
             "max_tool_iterations": "Max Tool Iterations",
             "context_threshold": "Context Token Threshold",
             "tts_enabled": "Provide Text-to-Speech (Venice voices)",
@@ -139,6 +137,10 @@
       "reload_skills": {
         "name": "Reload Skills",
         "description": "Reload Venice AI skills from the skills directory on disk."
+      },
+      "reload_tools": {
+        "name": "Reload Tools",
+        "description": "Reload Venice AI tools from default_tools.yaml and the optional config/venice_ai/tools.yaml file."
       }
     }
   }

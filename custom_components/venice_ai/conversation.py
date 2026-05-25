@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import yaml
 from collections import OrderedDict
 from typing import Any
 
@@ -46,7 +45,6 @@ from .const import (
     CONF_CONTINUE_CONVERSATION,
     RECOMMENDED_CONTINUE_CONVERSATION,
     CONF_CONTEXT_THRESHOLD,
-    CONF_FUNCTION_TOOLS,
     CONF_SKILLS,
     DOMAIN,
     RECOMMENDED_CONTEXT_THRESHOLD,
@@ -471,42 +469,27 @@ class VeniceAIConversationEntity(ConversationEntity):
                 tool_dict["function"]["parameters"] = parameters_schema or {"type": "object", "properties": {}}
             venice_tools.append(tool_dict)
 
-        # Load and register custom function tools from options YAML
+        # Load function tools from the ToolManager (bundled + user file).
+        # Replaces the previous CONF_FUNCTION_TOOLS YAML textbox: tools now
+        # live in default_tools.yaml (shipped) and /config/venice_ai/tools.yaml
+        # (optional user overrides), validated once at load time.
         function_configs: list[dict] = []
-        function_tools_yaml = options.get(CONF_FUNCTION_TOOLS, "")
-        if function_tools_yaml and function_tools_yaml.strip():
-            try:
-                parsed = yaml.safe_load(function_tools_yaml)
-                if isinstance(parsed, list):
-                    raw_configs = parsed
-                elif isinstance(parsed, dict):
-                    raw_configs = [parsed]
-                else:
-                    raw_configs = []
-                for fc in raw_configs:
-                    if not isinstance(fc, dict):
-                        continue
-                    ftype = fc.get("type")
-                    if not ftype:
-                        continue
-                    try:
-                        fn = get_function(ftype)
-                        fn.validate_schema(fc)
-                        function_configs.append(fc)
-                        # Build Venice tool spec
-                        tool_dict = {
-                            "type": "function",
-                            "function": {
-                                "name": fc["name"],
-                                "description": fc.get("description", ""),
-                                "parameters": fc.get("parameters", {"type": "object", "properties": {}}),
-                            },
-                        }
-                        venice_tools.append(tool_dict)
-                    except Exception as fc_err:
-                        _LOGGER.warning("Skipping invalid function tool '%s': %s", fc.get("name"), fc_err)
-            except Exception as yaml_err:
-                _LOGGER.error("Failed to parse function_tools YAML: %s", yaml_err)
+        try:
+            from .tools import ToolManager
+            tool_manager = await ToolManager.async_get_instance(self.hass)
+            for tool in tool_manager.get_all_tools():
+                fc = tool.config
+                function_configs.append(fc)
+                venice_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": fc.get("parameters", {"type": "object", "properties": {}}),
+                    },
+                })
+        except Exception as tools_err:
+            _LOGGER.error("Failed to load Venice AI tools: %s", tools_err)
 
         # Retrieve existing chat log or create a new one, then append the new user message.
         # History is persisted across calls so the model has full multi-turn context.
