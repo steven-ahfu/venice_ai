@@ -23,7 +23,7 @@ from homeassistant.components.conversation import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LLM_HASS_API
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, TemplateError
 from homeassistant.helpers import intent, llm, device_registry as dr, selector
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -750,8 +750,7 @@ class VeniceAIConversationEntity(ConversationEntity):
             continue_conversation=should_continue,
         )
 
-    @callback
-    def async_added_to_hass(self) -> None:
+    async def async_added_to_hass(self) -> None:
         """Write state once added so entity_id is resolved before first use."""
         self.async_write_ha_state()
 

@@ -76,6 +76,206 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_FUNCTION_TOOLS_PLACEHOLDER = """\
+# Custom function tools — uncomment and edit any block to enable it.
+# Each tool needs: name, type, description.
+# Supported types: native, template, script, rest, scrape, bash,
+#                  read_file, write_file, edit_file, sqlite, composite.
+
+# ── 1. NATIVE: call a HA service ─────────────────────────────────────────────
+#- name: turn_on_entity
+#  type: native
+#  description: Turn on any exposed entity by entity_id
+#  operation: execute_service
+#  parameters:
+#    type: object
+#    properties:
+#      entity_id:
+#        type: string
+#        description: The entity_id to turn on (e.g. light.living_room)
+#    required: [entity_id]
+
+# ── 2. NATIVE: get entity history ────────────────────────────────────────────
+#- name: get_entity_history
+#  type: native
+#  description: Get the state history for one or more entities
+#  operation: get_history
+#  parameters:
+#    type: object
+#    properties:
+#      entity_ids:
+#        type: array
+#        items:
+#          type: string
+#        description: List of entity_ids
+#      start_time:
+#        type: string
+#        description: ISO 8601 start time (optional, defaults to 24h ago)
+#      end_time:
+#        type: string
+#        description: ISO 8601 end time (optional, defaults to now)
+#    required: [entity_ids]
+
+# ── 3. TEMPLATE: render Jinja2 against HA state ──────────────────────────────
+#- name: get_sensor_value
+#  type: template
+#  description: Return the current state of any sensor by entity_id
+#  value_template: "{{ states(entity_id) }}"
+#  parameters:
+#    type: object
+#    properties:
+#      entity_id:
+#        type: string
+#        description: The entity_id of the sensor
+#    required: [entity_id]
+
+# ── 4. SCRIPT: run a HA script sequence ──────────────────────────────────────
+#- name: set_scene
+#  type: script
+#  description: Activate a named scene in Home Assistant
+#  sequence:
+#    - service: scene.turn_on
+#      target:
+#        entity_id: "{{ scene_id }}"
+#  parameters:
+#    type: object
+#    properties:
+#      scene_id:
+#        type: string
+#        description: The entity_id of the scene (e.g. scene.movie_time)
+#    required: [scene_id]
+
+# ── 5. REST: HTTP request with templated URL ──────────────────────────────────
+#- name: get_weather
+#  type: rest
+#  description: Fetch current weather for a city using wttr.in
+#  resource_template: "https://wttr.in/{{ city }}?format=j1"
+#  method: GET
+#  headers:
+#    Accept: application/json
+#  value_template: "{{ value_json.current_condition[0].weatherDesc[0].value }}, {{ value_json.current_condition[0].temp_C }}°C"
+#  parameters:
+#    type: object
+#    properties:
+#      city:
+#        type: string
+#        description: City name (e.g. "New York")
+#    required: [city]
+
+# ── 6. SCRAPE: extract text from a webpage ────────────────────────────────────
+#- name: scrape_page_title
+#  type: scrape
+#  description: Fetch the title of any webpage
+#  resource_template: "{{ url }}"
+#  select: title
+#  parameters:
+#    type: object
+#    properties:
+#      url:
+#        type: string
+#        description: Full URL of the page to scrape
+#    required: [url]
+
+# ── 7. BASH: run a shell command ──────────────────────────────────────────────
+#- name: ping_host
+#  type: bash
+#  description: Ping a hostname or IP and return round-trip time
+#  command: "ping -c 4 {{ host }} 2>&1 | tail -3"
+#  parameters:
+#    type: object
+#    properties:
+#      host:
+#        type: string
+#        description: Hostname or IP address to ping
+#    required: [host]
+
+# ── 8. READ_FILE: read from the venice_ai workspace ───────────────────────────
+#- name: read_note
+#  type: read_file
+#  description: Read a file from /config/venice_ai/
+#  path: "{{ filename }}"
+#  parameters:
+#    type: object
+#    properties:
+#      filename:
+#        type: string
+#        description: Relative path inside /config/venice_ai/ (e.g. notes/todo.txt)
+#    required: [filename]
+
+# ── 9. WRITE_FILE: write to the venice_ai workspace ───────────────────────────
+#- name: write_note
+#  type: write_file
+#  description: Write or overwrite a text file in /config/venice_ai/
+#  path: "{{ filename }}"
+#  content: "{{ content }}"
+#  parameters:
+#    type: object
+#    properties:
+#      filename:
+#        type: string
+#        description: Relative path inside /config/venice_ai/
+#      content:
+#        type: string
+#        description: Full text content to write
+#    required: [filename, content]
+
+# ── 10. EDIT_FILE: replace text in a file ─────────────────────────────────────
+#- name: edit_note
+#  type: edit_file
+#  description: Replace a specific string in a file in /config/venice_ai/
+#  path: "{{ filename }}"
+#  old_text: "{{ old_text }}"
+#  new_text: "{{ new_text }}"
+#  parameters:
+#    type: object
+#    properties:
+#      filename:
+#        type: string
+#        description: Relative path inside /config/venice_ai/
+#      old_text:
+#        type: string
+#        description: Exact text to find and replace
+#      new_text:
+#        type: string
+#        description: Replacement text
+#    required: [filename, old_text, new_text]
+
+# ── 11. SQLITE: query the HA recorder database ────────────────────────────────
+#- name: query_recorder
+#  type: sqlite
+#  description: Run a read-only SQL SELECT against the HA recorder SQLite database
+#  query: "{{ sql }}"
+#  parameters:
+#    type: object
+#    properties:
+#      sql:
+#        type: string
+#        description: >
+#          SELECT query against HA recorder DB.
+#          Tables: states, state_attributes, events, statistics.
+#    required: [sql]
+
+# ── COMPOSITE: chain multiple functions ───────────────────────────────────────
+#- name: fetch_and_save_weather
+#  type: composite
+#  description: Fetch weather for a city and save the result to a file
+#  sequence:
+#    - type: rest
+#      resource_template: "https://wttr.in/{{ city }}?format=3"
+#      method: GET
+#      response_variable: weather_text
+#    - type: write_file
+#      path: "weather_cache.txt"
+#      content: "{{ weather_text }}"
+#  parameters:
+#    type: object
+#    properties:
+#      city:
+#        type: string
+#        description: City name to fetch weather for
+#    required: [city]
+"""
+
 # Try to import DEFAULT_SYSTEM_PROMPT; fallback if not available
 try:
     from .conversation import DEFAULT_SYSTEM_PROMPT
@@ -400,7 +600,10 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_ENABLE_WEB_SEARCH,
                     description={"suggested_value": options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)},
                 ): BooleanSelector(),
-                vol.Optional(CONF_FUNCTION_TOOLS, default=""): selector.TextSelector(
+                vol.Optional(
+                    CONF_FUNCTION_TOOLS,
+                    default=options.get(CONF_FUNCTION_TOOLS, _FUNCTION_TOOLS_PLACEHOLDER),
+                ): selector.TextSelector(
                     selector.TextSelectorConfig(multiline=True)
                 ),
                 vol.Optional(

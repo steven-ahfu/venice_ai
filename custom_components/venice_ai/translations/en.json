@@ -26,7 +26,7 @@
                 "description": "Configure Venice AI settings. Only models with function calling support are shown.",
                 "data_description": {
                     "function_tools": "Define custom tools as YAML. Each tool needs: name, type, description. Supported types: native, template, script, rest, scrape, bash, read_file, write_file, edit_file, sqlite, composite.",
-                    "skills": "Select skills to inject into the system prompt. Place SKILL.md files in config/venice_ai/skills/<name>/ and reload skills.",
+                    "skills": "Select skills to inject into the system prompt. Place SKILL.md files in config/venice_ai/skills/[name]/ and reload skills.",
                     "context_threshold": "When total tokens in a conversation exceed this value, older messages are removed to free context window space. Default: 40000."
                 },
                 "data": {
