@@ -383,11 +383,13 @@ class VeniceAIConversationEntity(ConversationEntity):
     ) -> ConversationResult:
         """Process a conversation input."""
         options = self.entry.options
-        model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-        max_tokens = options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
-        temperature = options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE)
-        top_p = options.get(CONF_TOP_P, RECOMMENDED_TOP_P)
-        strip_thinking = options.get(CONF_STRIP_THINKING_RESPONSE, False)
+        model: str = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        # NumberSelector with step=1 still returns a float from the HA frontend;
+        # the Venice API (and our client typing) expects int for max_tokens.
+        max_tokens: int = int(options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+        temperature: float = float(options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE))
+        top_p: float = float(options.get(CONF_TOP_P, RECOMMENDED_TOP_P))
+        strip_thinking: bool = bool(options.get(CONF_STRIP_THINKING_RESPONSE, False))
         prompt_template_str = options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
         llm_api = options.get(CONF_LLM_HASS_API)
 
@@ -514,7 +516,7 @@ class VeniceAIConversationEntity(ConversationEntity):
         assistant_response_content = None
         text_content = ""
 
-        max_tool_iterations = int(options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS))
+        max_tool_iterations: int = int(options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS))
 
         try:
             _trim_chat_log(chat_log)
@@ -582,8 +584,8 @@ class VeniceAIConversationEntity(ConversationEntity):
 
                 # Reactive token-based truncation: clear history middle if context is filling up
                 usage = response_data.get("usage", {}) if isinstance(response_data, dict) else {}
-                total_tokens = usage.get("total_tokens", 0)
-                context_threshold = options.get(CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD)
+                total_tokens: int = int(usage.get("total_tokens", 0) or 0)
+                context_threshold: int = int(options.get(CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD))
                 if total_tokens > context_threshold:
                     _truncate_message_history(chat_log)
 
