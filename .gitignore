@@ -1,6 +1,7 @@
 # mine
 open_ai_example/
 docs/
+.agents/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
