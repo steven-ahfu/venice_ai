@@ -610,6 +610,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
         try:
             from .skills import SkillManager
             skill_manager = await SkillManager.async_get_instance(self.hass)
+            await skill_manager.async_load_skills()
             skill_options = [
                 SelectOptionDict(label=s.name, value=s.name)
                 for s in skill_manager.get_all_skills()

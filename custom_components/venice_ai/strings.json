@@ -71,7 +71,7 @@
             "skills": "Enabled Skills"
           },
           "data_description": {
-            "skills": "Skills inject extra instructions into the system prompt. Place a `SKILL.md` file in `config/venice_ai/skills/[name]/` and reload skills."
+            "skills": "Skills inject extra instructions into the system prompt. Place a `SKILL.md` file in `/config/custom_components/venice_ai/skills/[name]/` and reload skills."
           }
         }
       }

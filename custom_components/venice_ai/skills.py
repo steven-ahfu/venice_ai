@@ -86,7 +86,12 @@ class SkillManager:
     @property
     def skills_dir(self) -> Path:
         """Return the path to the skills directory."""
-        return Path(self._hass.config.config_dir) / "venice_ai" / "skills"
+        return (
+            Path(self._hass.config.config_dir)
+            / "custom_components"
+            / "venice_ai"
+            / "skills"
+        )
 
     async def async_load_skills(self) -> int:
         """Scan skills_dir, parse all SKILL.md files, return count loaded."""
