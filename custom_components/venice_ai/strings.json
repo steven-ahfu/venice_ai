@@ -23,34 +23,55 @@
       "step": {
         "init": {
           "title": "Venice AI Options",
-          "description": "Configure Venice AI settings. Only models with function calling support are shown.\n\n**Tools loaded ({tools_path}):** {tools_names}\n\nTo add or override tools, create that file with a YAML list. Bundled tools come from the integration and are always available.",
-          "data_description": {
-            "skills": "Select skills to inject into the system prompt. Place SKILL.md files in config/venice_ai/skills/[name]/ and reload skills.",
-            "context_threshold": "When total tokens in a conversation exceed this value, older messages are removed to free context window space. Default: 40000."
-          },
+          "description": "Configure Venice AI conversation, voice, and model settings.",
           "data": {
             "chat_model": "AI Model",
             "prompt": "System Prompt",
             "llm_hass_api": "Control Home Assistant",
-            "temperature": "Temperature (0-2)",
-            "top_p": "Top P (0-1)",
+            "temperature": "Temperature",
+            "top_p": "Top P",
             "max_tokens": "Max Tokens",
-            "strip_thinking_response": "Strip thinking response (for reasoning models)",
-            "disable_thinking": "Disable thinking (for reasoning models)",
-            "continue_conversation": "Keep listening after questions (extended conversation)",
+            "strip_thinking_response": "Strip Thinking Response",
+            "disable_thinking": "Disable Thinking",
+            "continue_conversation": "Continue Conversation",
             "enable_web_search": "Enable Web Search",
             "max_tool_iterations": "Max Tool Iterations",
             "context_threshold": "Context Token Threshold",
-            "tts_enabled": "Provide Text-to-Speech (Venice voices)",
+            "tts_enabled": "Enable Text-to-Speech",
             "tts_model": "TTS Model",
             "tts_voice": "TTS Voice",
-            "tts_response_format": "TTS Response Format",
+            "tts_response_format": "TTS Audio Format",
             "tts_speed": "TTS Speed",
-            "stt_enabled": "Provide Speech-to-Text (Venice transcription)",
+            "stt_enabled": "Enable Speech-to-Text",
             "stt_model": "STT Model",
             "stt_response_format": "STT Response Format",
-            "stt_timestamps": "STT Include Timestamps",
+            "stt_timestamps": "Include Word Timestamps"
+          },
+          "data_description": {
+            "chat_model": "Only models with function calling support are shown.",
+            "temperature": "Controls randomness — higher values produce more varied responses (0–2).",
+            "top_p": "Nucleus sampling threshold — lower values focus on likely tokens (0–1).",
+            "max_tokens": "Maximum tokens the model may generate per response.",
+            "strip_thinking_response": "Remove reasoning blocks from the output before showing the response. For reasoning models.",
+            "disable_thinking": "Skip the internal reasoning step entirely, trading depth for speed. For reasoning models.",
+            "continue_conversation": "Keep the microphone open after a response that ends with a question.",
+            "enable_web_search": "Allow Venice AI to search the web when answering questions.",
+            "max_tool_iterations": "How many tool-call rounds the agent may run per message before stopping.",
+            "context_threshold": "Remove older messages when the conversation exceeds this many tokens.",
+            "tts_enabled": "Register Venice as a TTS provider for the voice assistant pipeline.",
+            "tts_speed": "Playback speed multiplier (0.25–4.0).",
+            "stt_enabled": "Register Venice as a speech-to-text provider for the voice assistant pipeline.",
+            "stt_timestamps": "Return word-level timestamps in the transcription response."
+          }
+        },
+        "skills_and_tools": {
+          "title": "Skills & Function Calling",
+          "description": "**Active tools ({tools_path}):** {tools_names}\n\nTo add or override tools, create `config/venice_ai/tools.yaml`. Bundled tools are always available as a baseline.",
+          "data": {
             "skills": "Enabled Skills"
+          },
+          "data_description": {
+            "skills": "Skills inject extra instructions into the system prompt. Place a `SKILL.md` file in `config/venice_ai/skills/[name]/` and reload skills."
           }
         }
       }

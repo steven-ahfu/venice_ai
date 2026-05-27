@@ -318,7 +318,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
         tts_models_options: list[SelectOptionDict],
         stt_models_options: list[SelectOptionDict],
         llm_api_options: list[SelectOptionDict] | None = None,
-        skill_options: list[SelectOptionDict] | None = None,
     ) -> vol.Schema:
         """Build the voluptuous options schema from fetched model lists.
 
@@ -400,20 +399,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_ENABLE_WEB_SEARCH,
                     description={"suggested_value": options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)},
                 ): BooleanSelector(),
-                vol.Optional(
-                    CONF_SKILLS,
-                    description={
-                        "suggested_value": [
-                            s for s in options.get(CONF_SKILLS, [])
-                            if skill_options and any(o["value"] == s for o in skill_options)
-                        ]
-                    },
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=skill_options or [],
-                        multiple=True,
-                    )
-                ),
                 vol.Optional(
                     CONF_MAX_TOOL_ITERATIONS,
                     description={"suggested_value": options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)},
@@ -541,10 +526,34 @@ class VeniceAIOptionsFlow(OptionsFlow):
             for api in llm.async_get_apis(self.hass)
         ]
 
+    def _build_skills_schema(
+        self,
+        skill_options: list[SelectOptionDict],
+    ) -> vol.Schema:
+        """Build the schema for the skills & tools step."""
+        options = self.config_entry.options
+        valid_skill_values = {o["value"] for o in skill_options}
+        return vol.Schema({
+            vol.Optional(
+                CONF_SKILLS,
+                description={
+                    "suggested_value": [
+                        s for s in options.get(CONF_SKILLS, [])
+                        if s in valid_skill_values
+                    ]
+                },
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=skill_options,
+                    multiple=True,
+                )
+            ),
+        })
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Manage the main options (page 1 of 2)."""
         errors: dict[str, str] = {}
         if user_input is not None:
             # Normalise CONF_LLM_HASS_API: empty list / blank → drop key entirely.
@@ -552,8 +561,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
             if not llm_api_value:
                 user_input.pop(CONF_LLM_HASS_API, None)
             else:
-                # Accept either a list (multi-select) or a single string
-                # (legacy stored value).  Validate every entry is registered.
                 if isinstance(llm_api_value, str):
                     llm_api_value = [llm_api_value]
                 valid_ids = {api.id for api in llm.async_get_apis(self.hass)}
@@ -564,8 +571,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     user_input[CONF_LLM_HASS_API] = filtered
 
             if not errors:
-                # When a feature toggle is off, clear its sub-fields so stale
-                # values don't persist in storage and confuse the next open.
                 if not user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
                     for key in (CONF_TTS_MODEL, CONF_TTS_VOICE, CONF_TTS_RESPONSE_FORMAT, CONF_TTS_SPEED):
                         user_input.pop(key, None)
@@ -573,12 +578,34 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     for key in (CONF_STT_MODEL, CONF_STT_RESPONSE_FORMAT, CONF_STT_TIMESTAMPS):
                         user_input.pop(key, None)
 
-                return self.async_create_entry(title="", data=user_input)
+                # Carry existing skills forward (they're edited on the next step).
+                user_input.setdefault(CONF_SKILLS, self.config_entry.options.get(CONF_SKILLS, []))
+                self._init_data = user_input
+                return await self.async_step_skills_and_tools()
 
         models, tts_models, stt_models, fetch_errors = await self._fetch_model_options()
         llm_api_options = self._fetch_llm_api_options()
 
-        # Load skills for the multi-select
+        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options)
+
+        if fetch_errors:
+            errors.update(fetch_errors)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=options_schema,
+            errors=errors,
+        )
+
+    async def async_step_skills_and_tools(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Skills and function calling options (page 2 of 2)."""
+        if user_input is not None:
+            merged = {**getattr(self, "_init_data", {}), **user_input}
+            return self.async_create_entry(title="", data=merged)
+
+        # Load skills for the multi-select.
         skill_options: list[SelectOptionDict] = []
         try:
             from .skills import SkillManager
@@ -590,33 +617,26 @@ class VeniceAIOptionsFlow(OptionsFlow):
         except Exception:
             _LOGGER.debug("Could not load skills for options form", exc_info=True)
 
-        # Load tools for read-only display in the form description. Tools are
-        # not togglable from the UI — to disable a bundled tool, override it
-        # in <config>/venice_ai/tools.yaml.
-        tools_path = "<config>/venice_ai/tools.yaml"
-        tools_names = ""
+        # Load tools for the read-only description.
+        tools_path = "config/venice_ai/tools.yaml"
+        tools_names = "(none)"
         try:
             from .tools import ToolManager
             tool_manager = await ToolManager.async_get_instance(self.hass)
-            # Reload so users see edits to tools.yaml without restarting HA.
             await tool_manager.async_load_tools()
             tools_path = str(tool_manager.user_tools_path)
             loaded = tool_manager.get_all_tools()
-            tools_names = ", ".join(t.name for t in loaded) if loaded else "(none loaded)"
+            if loaded:
+                tools_names = "\n".join(
+                    f"- **{t.name}** ({t.type}): {t.description}" for t in loaded
+                )
         except Exception:
             _LOGGER.debug("Could not load tools for options form", exc_info=True)
-            tools_names = "(error loading)"
-
-        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options, skill_options)
-
-        # Merge fetch errors with validation errors
-        if fetch_errors:
-            errors.update(fetch_errors)
+            tools_names = "(error loading tools)"
 
         return self.async_show_form(
-            step_id="init",
-            data_schema=options_schema,
-            errors=errors,
+            step_id="skills_and_tools",
+            data_schema=self._build_skills_schema(skill_options),
             description_placeholders={
                 "tools_path": tools_path,
                 "tools_names": tools_names,

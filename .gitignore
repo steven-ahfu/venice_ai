@@ -2,6 +2,7 @@
 open_ai_example/
 docs/
 .agents/
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
