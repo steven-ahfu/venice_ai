@@ -49,6 +49,7 @@
           },
           "data_description": {
             "chat_model": "Only models with function calling support are shown.",
+            "llm_hass_api": "Try Home Assistant's native agent first, then expose Home Assistant tools to Venice for fallback control.",
             "temperature": "Controls randomness — higher values produce more varied responses (0–2).",
             "top_p": "Nucleus sampling threshold — lower values focus on likely tokens (0–1).",
             "max_tokens": "Maximum tokens the model may generate per response.",

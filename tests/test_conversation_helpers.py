@@ -88,6 +88,11 @@ def test_default_system_prompt_is_nonempty():
     assert len(DEFAULT_SYSTEM_PROMPT) > 20
 
 
+def test_default_system_prompt_includes_skill_section_template():
+    assert "## Available Skills" in DEFAULT_SYSTEM_PROMPT
+    assert "{{ skill.content }}" in DEFAULT_SYSTEM_PROMPT
+
+
 # ── venice_params assembly ────────────────────────────────────────────────────
 # Directly test the logic extracted from async_process so a regression can't
 # silently break it (e.g. the old "venice_params or None" empty-dict bug).

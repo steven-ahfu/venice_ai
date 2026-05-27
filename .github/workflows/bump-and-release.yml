@@ -1,0 +1,72 @@
+name: Bump and Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          VERSION=$(jq -r '.version' custom_components/venice_ai/manifest.json)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Could not read version from custom_components/venice_ai/manifest.json"
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "$VERSION"
+          patch=$((patch + 1))
+          NEW_VERSION="$major.$minor.$patch"
+          NEW_TAG="v$NEW_VERSION"
+
+          tmp_file="$(mktemp)"
+          jq --arg version "$NEW_VERSION" '.version = $version' custom_components/venice_ai/manifest.json > "$tmp_file"
+          mv "$tmp_file" custom_components/venice_ai/manifest.json
+
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          NEW_TAG: ${{ steps.bump.outputs.new_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add custom_components/venice_ai/manifest.json
+          git commit -m "${NEW_TAG}: bump version"
+          git tag "${NEW_TAG}"
+          git push origin "HEAD:${{ github.ref_name }}" --tags
+
+  release:
+    needs: bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.new_tag }}
+          fetch-depth: 0
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ needs.bump.outputs.new_tag }}
+        run: |
+          gh release create "$NEW_TAG" \
+            --title "$NEW_TAG" \
+            --generate-notes \
+            --latest

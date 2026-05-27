@@ -7,6 +7,7 @@ import logging
 from collections import OrderedDict
 from typing import Any
 
+from homeassistant.components import conversation as conversation_component
 from homeassistant.components.conversation import (
     HOME_ASSISTANT_AGENT,
     ConversationEntity,
@@ -74,6 +75,36 @@ DEFAULT_SYSTEM_PROMPT = (
     "{% for skill in skills %}### {{ skill.name }}\n{{ skill.content }}\n{% endfor %}"
     "{% endif %}"
 )
+
+
+def _control_home_assistant_enabled(llm_api: Any) -> bool:
+    """Return whether Home Assistant control/routing is enabled."""
+    if llm_api in (None, "", [], (), {}):
+        return False
+    return True
+
+
+def _hass_result_satisfied(result: ConversationResult | None) -> bool:
+    """Return whether a native Home Assistant result fully handled the request."""
+    return result is not None and getattr(result.response, "error_code", None) is None
+
+
+async def _async_try_hass_agent(
+    hass: HomeAssistant,
+    user_input: ConversationInput,
+    current_agent: Any,
+) -> ConversationResult | None:
+    """Try the built-in Home Assistant agent before Venice."""
+    hass_agent = conversation_component.async_get_agent(hass, HOME_ASSISTANT_AGENT)
+    if hass_agent is None or hass_agent is current_agent:
+        _LOGGER.debug("Home Assistant agent not available for native intent handling")
+        return None
+
+    try:
+        return await hass_agent.async_process(user_input)
+    except Exception as err:
+        _LOGGER.warning("Native Home Assistant handling failed: %s", err)
+        return None
 
 
 def _strip_thinking(text: str) -> str:
@@ -381,6 +412,22 @@ class VeniceAIConversationEntity(ConversationEntity):
     ) -> ConversationResult:
         """Process a conversation input."""
         options = self.entry.options
+        llm_api = options.get(CONF_LLM_HASS_API)
+
+        if _control_home_assistant_enabled(llm_api):
+            hass_result = await _async_try_hass_agent(self.hass, user_input, self)
+            if _hass_result_satisfied(hass_result):
+                return hass_result
+
+        return await self._async_process_with_venice(user_input, options, llm_api)
+
+    async def _async_process_with_venice(
+        self,
+        user_input: ConversationInput,
+        options: dict[str, Any],
+        llm_api: Any,
+    ) -> ConversationResult:
+        """Process a conversation input with Venice and optional tool use."""
         model: str = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
         # NumberSelector with step=1 still returns a float from the HA frontend;
         # the Venice API (and our client typing) expects int for max_tokens.
@@ -389,7 +436,6 @@ class VeniceAIConversationEntity(ConversationEntity):
         top_p: float = float(options.get(CONF_TOP_P, RECOMMENDED_TOP_P))
         strip_thinking: bool = bool(options.get(CONF_STRIP_THINKING_RESPONSE, False))
         prompt_template_str = options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
-        llm_api = options.get(CONF_LLM_HASS_API)
 
         # Render system prompt template with Home Assistant context so
         # template functions (e.g. now(), states(), area_entities()) work.

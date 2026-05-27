@@ -27,22 +27,31 @@ class Skill:
 
 def _parse_skill_md(text: str, path: Path, skills_dir: Path) -> Skill | None:
     """Parse a SKILL.md file into a Skill object."""
+    meta: dict[str, Any] | None = None
     try:
         import yaml as _yaml
     except ImportError:
-        _LOGGER.warning("PyYAML not available; cannot parse skill at %s", path)
-        return None
+        _LOGGER.debug("PyYAML not available; falling back to minimal frontmatter parse for %s", path)
+        _yaml = None
 
     match = _FRONTMATTER_RE.match(text)
     if not match:
         _LOGGER.warning("Skill at %s is missing YAML frontmatter", path)
         return None
 
-    try:
-        meta = _yaml.safe_load(match.group(1))
-    except Exception as err:
-        _LOGGER.warning("Failed to parse skill frontmatter at %s: %s", path, err)
-        return None
+    if _yaml is not None:
+        try:
+            meta = _yaml.safe_load(match.group(1))
+        except Exception as err:
+            _LOGGER.warning("Failed to parse skill frontmatter at %s: %s", path, err)
+
+    if meta is None:
+        meta = {}
+        for line in match.group(1).splitlines():
+            key, sep, value = line.partition(":")
+            if not sep:
+                continue
+            meta[key.strip()] = value.strip().strip("'\"")
 
     if not isinstance(meta, dict) or "description" not in meta:
         _LOGGER.warning("Skill at %s missing 'description' in frontmatter", path)

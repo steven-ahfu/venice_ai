@@ -1,9 +1,8 @@
 """Tests for skill discovery and parsing."""
 
 import asyncio
-import sys
+import builtins
 from types import SimpleNamespace
-from types import ModuleType
 
 from custom_components.venice_ai.skills import SkillManager
 
@@ -24,10 +23,7 @@ def test_skills_dir_is_inside_installed_component(tmp_path):
     )
 
 
-def test_loads_skill_from_installed_component_directory(tmp_path, monkeypatch):
-    yaml = ModuleType("yaml")
-    yaml.safe_load = lambda text: {"description": text.split(":", 1)[1].strip()}
-    monkeypatch.setitem(sys.modules, "yaml", yaml)
+def test_loads_skill_from_installed_component_directory(tmp_path):
     skill_path = (
         tmp_path
         / "custom_components"
@@ -50,3 +46,35 @@ def test_loads_skill_from_installed_component_directory(tmp_path, monkeypatch):
     assert skill is not None
     assert skill.description == "Home Assistant runtime controls."
     assert skill.content.strip() == "Use entity services."
+
+
+def test_loads_skill_without_pyyaml(tmp_path, monkeypatch):
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("yaml unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    skill_path = (
+        tmp_path
+        / "custom_components"
+        / "venice_ai"
+        / "skills"
+        / "venice-assistant"
+        / "SKILL.md"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\ndescription: Venice runtime voice behavior.\n---\n\nUse spoken replies.\n",
+        encoding="utf-8",
+    )
+    manager = SkillManager(_FakeHass(tmp_path))
+
+    count = asyncio.run(manager.async_load_skills())
+
+    assert count == 1
+    skill = manager.get_skill("venice-assistant")
+    assert skill is not None
+    assert skill.description == "Venice runtime voice behavior."
