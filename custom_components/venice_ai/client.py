@@ -272,36 +272,34 @@ class Models:
             _LOGGER.error("Failed to decode models JSON response: %s", response.text)
             raise VeniceAIError("Failed to decode models API response") from err
 
+    async def get(self, model_id: str) -> dict:
+        """Fetch a single model by ID, returning its full spec including voices."""
+        cache_key = f"model:{model_id}"
+        now = time.monotonic()
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            data, timestamp = cached
+            if now - timestamp < self._CACHE_TTL_SECONDS:
+                return data  # type: ignore[return-value]
 
-class Voices:
-    """Voices API for Venice AI."""
-
-    def __init__(self, client: "AsyncVeniceAIClient") -> None:
-        """Initialize voices API."""
-        self.client = client
-
-    async def list(self) -> list[dict]:
-        """List available voices."""
         try:
             response = await self.client._async_request_with_retry(
                 "GET",
-                "/audio/voices",
+                f"/models/{model_id}",
                 headers=self.client._headers,
             )
             response.raise_for_status()
-            voice_data = response.json()
-            voices = voice_data.get("data", [])
-            return voices
+            model_data = response.json()
+            self._cache[cache_key] = (model_data, now)
+            return model_data
         except httpx.HTTPStatusError as err:
             error_detail = getattr(err.response, "text", str(err))
-            _LOGGER.error("Venice AI Voices API HTTP error %s: %s", err.response.status_code, error_detail)
-            raise _categorize_http_error(err.response.status_code, error_detail, "fetching voices") from err
+            _LOGGER.warning("Venice AI Models API HTTP error fetching %s: %s", model_id, error_detail)
+            raise _categorize_http_error(err.response.status_code, error_detail, f"fetching model {model_id}") from err
         except httpx.RequestError as err:
-            _LOGGER.error("Venice AI Voices API request error: %s", err)
-            raise NetworkError(f"Request error fetching voices: {err}") from err
+            raise NetworkError(f"Request error fetching model {model_id}: {err}") from err
         except json.JSONDecodeError as err:
-            _LOGGER.error("Failed to decode voices JSON response: %s", response.text)
-            raise VeniceAIError("Failed to decode voices API response") from err
+            raise VeniceAIError(f"Failed to decode model {model_id} response") from err
 
 
 class Speech:
@@ -549,7 +547,6 @@ class AsyncVeniceAIClient:
         }
         self.chat = ChatCompletions(self)
         self.models = Models(self)
-        self.voices = Voices(self)
         self.speech = Speech(self)
         self.transcriptions = Transcriptions(self)
         self.images = Images(self)

@@ -18,11 +18,11 @@ CONF_PROMPT = "prompt"
 CONF_CHAT_MODEL = "chat_model"
 RECOMMENDED_CHAT_MODEL = "llama-3.3-70b"  # Venice AI default model with function calling support
 CONF_MAX_TOKENS = "max_tokens"
-RECOMMENDED_MAX_TOKENS = 512
+RECOMMENDED_MAX_TOKENS = 2048
 CONF_TOP_P = "top_p"
-RECOMMENDED_TOP_P = 1.0
+RECOMMENDED_TOP_P = 0.9
 CONF_TEMPERATURE = "temperature"
-RECOMMENDED_TEMPERATURE = 1.0
+RECOMMENDED_TEMPERATURE = 0.7
 
 # Venice AI reasoning model options
 CONF_STRIP_THINKING_RESPONSE = "strip_thinking_response"
@@ -39,19 +39,54 @@ RECOMMENDED_TTS_RESPONSE_FORMAT = "mp3"
 CONF_TTS_SPEED = "tts_speed"
 RECOMMENDED_TTS_SPEED = 1.0
 
-# Venice AI TTS voices (shared between config flow and TTS provider voice list)
-VENICE_TTS_VOICES = [
-    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jadzia", "af_jessica",
-    "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
-    "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
-    "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma", "bf_lily",
-    "bm_daniel", "bm_fable", "bm_george", "bm_lewis", "zf_xiaobei",
-    "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi", "zm_yunjian", "zm_yunxi",
-    "zm_yunxia", "zm_yunyang", "ff_siwis", "hf_alpha", "hf_beta", "hm_omega",
-    "hm_psi", "if_sara", "im_nicola", "jf_alpha", "jf_gongitsune",
-    "jf_nezumi", "jf_tebukuro", "jm_kumo", "pf_dora", "pm_alex", "pm_santa",
-    "ef_dora", "em_alex", "em_santa",
-]
+# Static fallback voice lists per TTS model (sourced from GET /models?type=tts).
+# The config flow fetches these live; this map is used when the API is unreachable.
+MODEL_VOICES: dict[str, list[str]] = {
+    "tts-kokoro": [
+        "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jadzia", "af_jessica",
+        "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+        "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma", "bf_lily",
+        "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+        "ef_dora", "em_alex", "em_santa", "ff_siwis",
+        "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
+        "if_sara", "im_nicola",
+        "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+        "pf_dora", "pm_alex", "pm_santa",
+        "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+        "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
+    ],
+    "tts-qwen3-0-6b": ["Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan", "Serena", "Sohee", "Uncle_Fu", "Vivian"],
+    "tts-qwen3-1-7b": ["Aiden", "Dylan", "Eric", "Ono_Anna", "Ryan", "Serena", "Sohee", "Uncle_Fu", "Vivian"],
+    "tts-xai-v1": ["ara", "eve", "leo", "rex", "sal"],
+    "tts-inworld-1-5-max": [
+        "Alex", "Ashley", "Craig", "Edward", "Elizabeth",
+        "Hades", "Luna", "Mark", "Olivia", "Pixie",
+        "Priya", "Ronald", "Sarah", "Theodore",
+    ],
+    "tts-chatterbox-hd": ["Aurora", "Blade", "Britney", "Carl", "Cliff", "Richard", "Rico", "Siobhan", "Vicky"],
+    "tts-orpheus": ["dan", "jess", "leah", "leo", "mia", "tara", "zac", "zoe"],
+    "tts-elevenlabs-turbo-v2-5": [
+        "Alice", "Aria", "Bill", "Brian", "Callum", "Charlie", "Charlotte",
+        "Chris", "Daniel", "Eric", "George", "Jessica", "Laura", "Liam",
+        "Lily", "Matilda", "Rachel", "River", "Roger", "Sarah", "Will",
+    ],
+    "tts-minimax-speech-02-hd": [
+        "CalmWoman", "CasualGuy", "DeepVoiceMan", "DeterminedMan", "ElegantMan",
+        "ExuberantGirl", "FriendlyPerson", "ImposingManner", "InspirationalGirl",
+        "LivelyGirl", "LovelyGirl", "PatientMan", "SweetGirl", "WiseWoman", "YoungKnight",
+    ],
+    "tts-gemini-3-1-flash": [
+        "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe",
+        "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux",
+        "Iapetus", "Kore", "Laomedeia", "Leda", "Orus", "Puck", "Pulcherrima",
+        "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar", "Sulafat", "Umbriel",
+        "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+    ],
+}
+
+# Fallback for unknown models — use Kokoro voices as a safe default
+VENICE_TTS_VOICES = MODEL_VOICES["tts-kokoro"]
 
 # Automatically keep conversation open after a question response
 CONF_CONTINUE_CONVERSATION = "continue_conversation"

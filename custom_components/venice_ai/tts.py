@@ -27,6 +27,7 @@ from .const import (
     CONF_TTS_SPEED,
     CONF_TTS_VOICE,
     DOMAIN,
+    MODEL_VOICES,
     RECOMMENDED_TTS_ENABLED,
     RECOMMENDED_TTS_MODEL,
     RECOMMENDED_TTS_RESPONSE_FORMAT,
@@ -159,8 +160,10 @@ class VeniceAITTS(TextToSpeechEntity):
         return (response_format, audio_data)
 
     def async_get_supported_voices(self, language: str) -> list[Voice] | None:
-        """Return available Venice voices for Home Assistant voice selection."""
-        return [Voice(voice_id, voice_id) for voice_id in VENICE_TTS_VOICES]
+        """Return voices for the currently-configured TTS model."""
+        model = self._config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
+        voices = MODEL_VOICES.get(model, VENICE_TTS_VOICES)
+        return [Voice(voice_id, voice_id) for voice_id in voices]
 
     async def async_stream_tts_audio(
         self, request: TTSAudioRequest

@@ -21,7 +21,7 @@
         description: City name, optionally followed by a country (e.g. "Tokyo" or "Paris, France").
     required:
       - location
-  url: "https://wttr.in/{{ location | urlencode }}?format=j1"
+  resource_template: "https://wttr.in/{{ location | urlencode }}?format=j1"
   method: GET
 
 - name: get_current_time

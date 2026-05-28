@@ -70,6 +70,7 @@ from .const import (
     RECOMMENDED_STT_MODEL,
     RECOMMENDED_STT_RESPONSE_FORMAT,
     RECOMMENDED_STT_TIMESTAMPS,
+    MODEL_VOICES,
     VENICE_TTS_VOICES,
 )
 
@@ -210,30 +211,28 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
     async def _fetch_model_options(
         self,
-    ) -> tuple[list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], dict[str, str]]:
-        """Fetch available models from Venice AI and return options + errors.
+    ) -> tuple[list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], dict[str, str]]:
+        """Fetch available models from Venice AI.
 
-        The client is scoped entirely within this method via ``async with`` so
-        that the underlying aiohttp session is guaranteed to be closed on both
-        the happy path and any exception or flow-cancellation path.  Storing
-        the client on ``self`` is intentionally avoided: config-flow objects can
-        be abandoned between steps, and a ``self._client`` reference that
-        survives past the ``finally`` block would leak the session if the flow
-        is garbage-collected before cleanup runs.
+        Voices are extracted from the TTS model list (model_spec.voices) for the
+        currently-selected TTS model — no extra API call needed.
 
         Returns:
-            (chat_models, tts_models, stt_models, errors)
+            (chat_models, tts_models, stt_models, voice_options, errors)
         """
         chat_options: list[SelectOptionDict] = []
         tts_options: list[SelectOptionDict] = []
         stt_options: list[SelectOptionDict] = []
+        voice_options: list[SelectOptionDict] = []
         errors: dict[str, str] = {}
 
         api_key = self.config_entry.data.get(CONF_API_KEY)
         if not api_key:
             _LOGGER.warning("No API key found in config entry for options flow")
             errors["base"] = "missing_api_key"
-            return chat_options, tts_options, stt_options, errors
+            return chat_options, tts_options, stt_options, voice_options, errors
+
+        selected_tts_model = self.config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
 
         try:
             async with AsyncVeniceAIClient(
@@ -266,11 +265,21 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 tts_resp = await client.models.list(model_type="tts")
                 if isinstance(tts_resp, list):
                     tts_options = [
-                        SelectOptionDict(label=m.get("id", "Unknown"), value=m.get("id", ""))
+                        SelectOptionDict(
+                            label=m.get("model_spec", {}).get("name") or m.get("id", "Unknown"),
+                            value=m.get("id", ""),
+                        )
                         for m in tts_resp
                         if m.get("id")
                     ]
                     _LOGGER.debug("Found %d TTS models", len(tts_options))
+                    # Extract voices for the selected model from the same response
+                    for m in tts_resp:
+                        if m.get("id") == selected_tts_model:
+                            voices = m.get("model_spec", {}).get("voices", [])
+                            voice_options = [SelectOptionDict(label=v, value=v) for v in voices]
+                            _LOGGER.debug("Found %d voices for %s", len(voice_options), selected_tts_model)
+                            break
                 else:
                     _LOGGER.debug("No TTS models returned or invalid response")
 
@@ -298,25 +307,23 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
         # Fallback to defaults when nothing was fetched
         if not chat_options:
-            chat_options = [
-                SelectOptionDict(label=RECOMMENDED_CHAT_MODEL, value=RECOMMENDED_CHAT_MODEL)
-            ]
+            chat_options = [SelectOptionDict(label=RECOMMENDED_CHAT_MODEL, value=RECOMMENDED_CHAT_MODEL)]
         if not tts_options:
-            tts_options = [
-                SelectOptionDict(label=RECOMMENDED_TTS_MODEL, value=RECOMMENDED_TTS_MODEL)
-            ]
+            tts_options = [SelectOptionDict(label=RECOMMENDED_TTS_MODEL, value=RECOMMENDED_TTS_MODEL)]
         if not stt_options:
-            stt_options = [
-                SelectOptionDict(label=RECOMMENDED_STT_MODEL, value=RECOMMENDED_STT_MODEL)
-            ]
+            stt_options = [SelectOptionDict(label=RECOMMENDED_STT_MODEL, value=RECOMMENDED_STT_MODEL)]
+        if not voice_options:
+            fallback_voices = MODEL_VOICES.get(selected_tts_model, VENICE_TTS_VOICES)
+            voice_options = [SelectOptionDict(label=v, value=v) for v in fallback_voices]
 
-        return chat_options, tts_options, stt_options, errors
+        return chat_options, tts_options, stt_options, voice_options, errors
 
     def _build_options_schema(
         self,
         models_options: list[SelectOptionDict],
         tts_models_options: list[SelectOptionDict],
         stt_models_options: list[SelectOptionDict],
+        voice_options: list[SelectOptionDict] | None = None,
         llm_api_options: list[SelectOptionDict] | None = None,
     ) -> vol.Schema:
         """Build the voluptuous options schema from fetched model lists.
@@ -357,19 +364,19 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_MAX_TOKENS,
                     description={"suggested_value": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)},
                 ): NumberSelector(
-                    NumberSelectorConfig(min=1, max=32768, step=1, mode="slider")
+                    NumberSelectorConfig(min=1, max=32768, step=1, mode="box")
                 ),
                 vol.Optional(
                     CONF_TOP_P,
                     description={"suggested_value": options.get(CONF_TOP_P, RECOMMENDED_TOP_P)},
                 ): NumberSelector(
-                    NumberSelectorConfig(min=0.0, max=1.0, step=0.05, mode="slider")
+                    NumberSelectorConfig(min=0.0, max=1.0, step=0.05, mode="box")
                 ),
                 vol.Optional(
                     CONF_TEMPERATURE,
                     description={"suggested_value": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE)},
                 ): NumberSelector(
-                    NumberSelectorConfig(min=0.0, max=2.0, step=0.05, mode="slider")
+                    NumberSelectorConfig(min=0.0, max=2.0, step=0.05, mode="box")
                 ),
                 # Multi-checkbox: matches the canonical HA pattern (openai_conversation,
                 # google_generative_ai_conversation, etc).  The previous DROPDOWN +
@@ -403,7 +410,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     CONF_MAX_TOOL_ITERATIONS,
                     description={"suggested_value": options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)},
                 ): NumberSelector(
-                    NumberSelectorConfig(min=1, max=20, step=1, mode="slider")
+                    NumberSelectorConfig(min=1, max=20, step=1, mode="box")
                 ),
                 vol.Optional(
                     CONF_CONTEXT_THRESHOLD,
@@ -440,10 +447,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 description={"suggested_value": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)},
             ): SelectSelector(
                 SelectSelectorConfig(
-                    options=[
-                        SelectOptionDict(label=voice, value=voice)
-                        for voice in VENICE_TTS_VOICES
-                    ],
+                    options=voice_options or [SelectOptionDict(label=v, value=v) for v in VENICE_TTS_VOICES],
                     mode=SelectSelectorMode.DROPDOWN,
                 )
             ),
@@ -464,7 +468,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 CONF_TTS_SPEED,
                 description={"suggested_value": options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)},
             ): NumberSelector(
-                NumberSelectorConfig(min=0.25, max=4.0, step=0.25, mode="slider")
+                NumberSelectorConfig(min=0.25, max=4.0, step=0.25, mode="box")
             ),
         }
 
@@ -583,10 +587,10 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 self._init_data = user_input
                 return await self.async_step_skills_and_tools()
 
-        models, tts_models, stt_models, fetch_errors = await self._fetch_model_options()
+        models, tts_models, stt_models, voice_options, fetch_errors = await self._fetch_model_options()
         llm_api_options = self._fetch_llm_api_options()
 
-        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options)
+        options_schema = self._build_options_schema(models, tts_models, stt_models, voice_options, llm_api_options)
 
         if fetch_errors:
             errors.update(fetch_errors)

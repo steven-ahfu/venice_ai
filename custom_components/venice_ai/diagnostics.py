@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DOMAIN, VENICE_TTS_VOICES
 
 # Fields redacted in full by async_redact_data (tokens, passwords, etc.).
 # NOTE: "api_key" is intentionally excluded here — it is handled separately
@@ -76,7 +76,6 @@ async def async_get_config_entry_diagnostics(
         coordinator_data = coordinator.data or {}
         text_models = coordinator_data.get("text_models", [])
         audio_models = coordinator_data.get("audio_models", [])
-        voices = coordinator_data.get("voices", [])
 
         diagnostics["coordinator"] = {
             "last_update_success": coordinator.last_update_success,
@@ -86,7 +85,7 @@ async def async_get_config_entry_diagnostics(
             else None,
             "text_models_count": len(text_models),
             "audio_models_count": len(audio_models),
-            "voices_count": len(voices),
+            "voices_count": len(VENICE_TTS_VOICES),
         }
     else:
         diagnostics["coordinator"] = None

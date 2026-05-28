@@ -26,7 +26,6 @@ class VeniceAICoordinatorData(TypedDict):
 
     text_models: list[dict[str, Any]]
     audio_models: list[dict[str, Any]]
-    voices: list[dict[str, Any]]
 
 
 class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorData]):
@@ -47,7 +46,7 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         )
 
     async def _async_update_data(self) -> VeniceAICoordinatorData:
-        """Fetch models and voices from Venice AI.
+        """Fetch models from Venice AI.
 
         Each category is fetched independently so a failure in one
         does not block the others.
@@ -55,7 +54,6 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         data: VeniceAICoordinatorData = {
             "text_models": [],
             "audio_models": [],
-            "voices": [],
         }
 
         try:
@@ -117,25 +115,5 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
             _LOGGER.warning("Venice AI error fetching ASR models: %s", err)
         except Exception:
             _LOGGER.exception("Unexpected error fetching ASR models")
-
-        try:
-            voices = await self.client.voices.list()
-            if isinstance(voices, list):
-                data["voices"] = voices
-                _LOGGER.debug("Coordinator fetched %d voices", len(voices))
-        except AuthenticationError as err:
-            _LOGGER.error("Authentication error fetching voices: %s", err)
-            raise UpdateFailed(f"Authentication failed: {err}") from err
-        except RateLimitError as err:
-            _LOGGER.warning("Rate limit exceeded fetching voices: %s", err)
-            raise UpdateFailed(f"Rate limit exceeded: {err}") from err
-        except ServiceUnavailableError as err:
-            _LOGGER.warning("Venice AI service unavailable fetching voices: %s", err)
-        except NetworkError as err:
-            _LOGGER.warning("Network error fetching voices: %s", err)
-        except VeniceAIError as err:
-            _LOGGER.warning("Venice AI error fetching voices: %s", err)
-        except Exception:
-            _LOGGER.exception("Unexpected error fetching voices")
 
         return data
