@@ -1,7 +1,7 @@
 name: Validate
 
 on:
-  push: 
+  push:
   pull_request:
   schedule:
     - cron: "0 0 * * *"
@@ -15,3 +15,9 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          # Skip checks that depend on external/repo-settings state this fork
+          # doesn't satisfy: brands (venice_ai isn't in home-assistant/brands)
+          # and topics (no GitHub repository topics assigned).
+          # NOTE: the `issues` check also fails because the repository has its
+          # Issues feature disabled; enable it in Settings to clear that check.
+          ignore: "brands topics"

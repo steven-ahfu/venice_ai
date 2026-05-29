@@ -1,6 +1,7 @@
 # mine
 open_ai_example/
-docs/
+docs/*
+!docs/custom-tools-examples.md
 .agents/
 .claude/
 
