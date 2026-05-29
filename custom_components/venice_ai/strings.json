@@ -28,6 +28,7 @@
         "init": {
           "title": "Venice AI Options",
           "description": "Configure Venice AI conversation, voice, and model settings.",
+          "submit": "Next",
           "data": {
             "chat_model": "AI Model",
             "prompt": "System Prompt",
@@ -76,6 +77,7 @@
         "tts_voice": {
           "title": "TTS Voice",
           "description": "Pick a voice for **{model_label}**. Voices are model-specific — change the TTS model on the previous step to see a different list.",
+          "submit": "Next",
           "data": {
             "tts_voice": "TTS Voice"
           },
@@ -85,12 +87,12 @@
         },
         "skills_and_tools": {
           "title": "Skills & Function Calling",
-          "description": "**Active tools:** {tools_names}\n\n[How to add custom tools →](https://github.com/grasponcrypto/venice_ai/blob/main/docs/custom-tools-examples.md)",
+          "description": "**Active tools:** {tools_names}\n\n[How to add custom tools →](https://github.com/steven-ahfu/venice_ai/blob/new-features/docs/custom-tools-examples.md)",
           "data": {
             "skills": "Enabled Skills"
           },
           "data_description": {
-            "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/grasponcrypto/venice_ai#skills)"
+            "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/steven-ahfu/venice_ai/tree/new-features#skills)"
           }
         }
       }
