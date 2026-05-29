@@ -34,6 +34,7 @@ from .const import (
     RECOMMENDED_TTS_SPEED,
     RECOMMENDED_TTS_VOICE,
     VENICE_TTS_VOICES,
+    friendly_voice_label,
 )
 
 
@@ -163,7 +164,7 @@ class VeniceAITTS(TextToSpeechEntity):
         """Return voices for the currently-configured TTS model."""
         model = self._config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
         voices = MODEL_VOICES.get(model, VENICE_TTS_VOICES)
-        return [Voice(voice_id, voice_id) for voice_id in voices]
+        return [Voice(voice_id, friendly_voice_label(model, voice_id)) for voice_id in voices]
 
     async def async_stream_tts_audio(
         self, request: TTSAudioRequest

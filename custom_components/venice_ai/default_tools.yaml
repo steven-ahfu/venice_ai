@@ -24,39 +24,6 @@
   resource_template: "https://wttr.in/{{ location | urlencode }}?format=j1"
   method: GET
 
-- name: get_current_time
-  type: template
-  description: >-
-    Return the current local date and time of the Home Assistant instance.
-    Use whenever the user asks "what time is it", "what's today's date", or
-    any question that depends on the current moment.
-  parameters:
-    type: object
-    properties: {}
-  value_template: >-
-    {{ now().strftime('%A, %B %d, %Y %I:%M %p %Z') }}
-
-- name: get_entity_state
-  type: template
-  description: >-
-    Return the current state and unit of a single Home Assistant entity. Use
-    when the user asks about a specific device or sensor.
-  parameters:
-    type: object
-    properties:
-      entity_id:
-        type: string
-        description: Full entity id, e.g. "sensor.living_room_temperature".
-    required:
-      - entity_id
-  value_template: >-
-    {% set s = states(entity_id) %}
-    {% if s in ['unknown', 'unavailable', None] %}
-      Entity {{ entity_id }} is {{ s }}.
-    {% else %}
-      {{ entity_id }} is {{ s }}{% if state_attr(entity_id, 'unit_of_measurement') %} {{ state_attr(entity_id, 'unit_of_measurement') }}{% endif %}.
-    {% endif %}
-
 - name: execute_service
   type: native
   operation: execute_service

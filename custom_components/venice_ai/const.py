@@ -88,6 +88,57 @@ MODEL_VOICES: dict[str, list[str]] = {
 # Fallback for unknown models — use Kokoro voices as a safe default
 VENICE_TTS_VOICES = MODEL_VOICES["tts-kokoro"]
 
+# Friendly display names for TTS models (sourced from GET /models?type=tts → model_spec.name)
+MODEL_LABELS: dict[str, str] = {
+    "tts-kokoro": "Kokoro Text to Speech",
+    "tts-qwen3-0-6b": "Qwen 3 TTS 0.6B",
+    "tts-qwen3-1-7b": "Qwen 3 TTS 1.7B",
+    "tts-xai-v1": "xAI TTS v1",
+    "tts-inworld-1-5-max": "Inworld TTS-1.5 Max",
+    "tts-chatterbox-hd": "Chatterbox HD (Resemble AI)",
+    "tts-orpheus": "Orpheus TTS",
+    "tts-elevenlabs-turbo-v2-5": "ElevenLabs Turbo v2.5",
+    "tts-minimax-speech-02-hd": "MiniMax Speech-02 HD",
+    "tts-gemini-3-1-flash": "Gemini 3.1 Flash TTS",
+}
+
+# USD price per 1M input characters (sourced from GET /models?type=tts → model_spec.pricing.input.usd)
+MODEL_PRICING_USD_PER_MTOK: dict[str, float] = {
+    "tts-kokoro": 3.5,
+    "tts-qwen3-0-6b": 87.5,
+    "tts-qwen3-1-7b": 112.5,
+    "tts-xai-v1": 18.75,
+    "tts-inworld-1-5-max": 12.5,
+    "tts-chatterbox-hd": 50.0,
+    "tts-orpheus": 62.5,
+    "tts-elevenlabs-turbo-v2-5": 62.5,
+    "tts-minimax-speech-02-hd": 125.0,
+    "tts-gemini-3-1-flash": 187.5,
+}
+
+
+def friendly_voice_label(model_id: str, voice_id: str) -> str:
+    """Return a human-friendly label for a Venice TTS voice id.
+
+    Kokoro voices use a ``<region><gender>_<name>`` pattern (e.g. ``af_sky``);
+    surface only the capitalised name part. Other models already ship
+    user-friendly names — return them unchanged.
+    """
+    if model_id == "tts-kokoro":
+        _, _, name = voice_id.partition("_")
+        if name:
+            return name[:1].upper() + name[1:]
+    return voice_id
+
+
+def tts_model_sublabel(model_id: str) -> str:
+    """Return a display string like ``"Kokoro Text to Speech ($3.50 / 1M chars)"``."""
+    name = MODEL_LABELS.get(model_id, model_id)
+    price = MODEL_PRICING_USD_PER_MTOK.get(model_id)
+    if price is None:
+        return name
+    return f"{name} (${price:.2f} / 1M chars)"
+
 # Automatically keep conversation open after a question response
 CONF_CONTINUE_CONVERSATION = "continue_conversation"
 RECOMMENDED_CONTINUE_CONVERSATION = False

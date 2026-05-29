@@ -54,6 +54,19 @@ The current default model is Llama 3.3 70B (llama-3.3-70b), which provides excel
 
 For reasoning models like Venice Reasoning (qwen-2.5-qwq-32b) or DeepSeek R1 671B, you can disable thinking for lower latency by enabling the "Disable thinking" option in the configuration.
 
+## Custom Tools
+
+You can extend Venice AI with your own tools by creating `/config/venice_ai/tools.yaml`. Tools are merged with the built-in defaults at startup — your tools take precedence on name conflicts.
+
+Supported tool types: `native`, `template`, `rest`, `scrape`, `bash`, `read_file`, `write_file`, `edit_file`, `sqlite`, `composite`.
+
+See [`docs/custom-tools-examples.md`](docs/custom-tools-examples.md) for working examples including:
+- **Morning briefing** — weather + calendar + battery status in one call
+- **Shopping list** — read and add items via conversation
+- **Notes** — append and read freeform timestamped notes
+- **Pyscript bridge** — call any `@service` pyscript function by name
+- **SQLite analytics** — query the recorder DB for historical insights
+
 ## Support
 If you encounter any issues or have feature requests, please open an issue on our [GitHub Issues page](https://github.com/grasponcrypto/venice_ai/issues).
 

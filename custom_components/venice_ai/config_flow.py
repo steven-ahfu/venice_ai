@@ -72,6 +72,8 @@ from .const import (
     RECOMMENDED_STT_TIMESTAMPS,
     MODEL_VOICES,
     VENICE_TTS_VOICES,
+    friendly_voice_label,
+    tts_model_sublabel,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -211,28 +213,27 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
     async def _fetch_model_options(
         self,
-    ) -> tuple[list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], dict[str, str]]:
+    ) -> tuple[list[SelectOptionDict], list[SelectOptionDict], list[SelectOptionDict], dict[str, list[str]], dict[str, str]]:
         """Fetch available models from Venice AI.
 
-        Voices are extracted from the TTS model list (model_spec.voices) for the
-        currently-selected TTS model — no extra API call needed.
+        Voice lists for every TTS model are returned as a model-id → voice-ids
+        map so the voice step can be built without an extra API call after the
+        user picks a model.
 
         Returns:
-            (chat_models, tts_models, stt_models, voice_options, errors)
+            (chat_models, tts_models, stt_models, voices_by_model, errors)
         """
         chat_options: list[SelectOptionDict] = []
         tts_options: list[SelectOptionDict] = []
         stt_options: list[SelectOptionDict] = []
-        voice_options: list[SelectOptionDict] = []
+        voices_by_model: dict[str, list[str]] = {}
         errors: dict[str, str] = {}
 
         api_key = self.config_entry.data.get(CONF_API_KEY)
         if not api_key:
             _LOGGER.warning("No API key found in config entry for options flow")
             errors["base"] = "missing_api_key"
-            return chat_options, tts_options, stt_options, voice_options, errors
-
-        selected_tts_model = self.config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
+            return chat_options, tts_options, stt_options, voices_by_model, errors
 
         try:
             async with AsyncVeniceAIClient(
@@ -266,20 +267,20 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 if isinstance(tts_resp, list):
                     tts_options = [
                         SelectOptionDict(
-                            label=m.get("model_spec", {}).get("name") or m.get("id", "Unknown"),
+                            label=tts_model_sublabel(m.get("id", "")),
                             value=m.get("id", ""),
                         )
                         for m in tts_resp
                         if m.get("id")
                     ]
-                    _LOGGER.debug("Found %d TTS models", len(tts_options))
-                    # Extract voices for the selected model from the same response
                     for m in tts_resp:
-                        if m.get("id") == selected_tts_model:
-                            voices = m.get("model_spec", {}).get("voices", [])
-                            voice_options = [SelectOptionDict(label=v, value=v) for v in voices]
-                            _LOGGER.debug("Found %d voices for %s", len(voice_options), selected_tts_model)
-                            break
+                        model_id = m.get("id")
+                        if not model_id:
+                            continue
+                        voices = m.get("model_spec", {}).get("voices", []) or []
+                        if voices:
+                            voices_by_model[model_id] = list(voices)
+                    _LOGGER.debug("Found %d TTS models", len(tts_options))
                 else:
                     _LOGGER.debug("No TTS models returned or invalid response")
 
@@ -309,26 +310,27 @@ class VeniceAIOptionsFlow(OptionsFlow):
         if not chat_options:
             chat_options = [SelectOptionDict(label=RECOMMENDED_CHAT_MODEL, value=RECOMMENDED_CHAT_MODEL)]
         if not tts_options:
-            tts_options = [SelectOptionDict(label=RECOMMENDED_TTS_MODEL, value=RECOMMENDED_TTS_MODEL)]
+            tts_options = [
+                SelectOptionDict(label=tts_model_sublabel(model_id), value=model_id)
+                for model_id in MODEL_VOICES
+            ] or [SelectOptionDict(label=tts_model_sublabel(RECOMMENDED_TTS_MODEL), value=RECOMMENDED_TTS_MODEL)]
         if not stt_options:
             stt_options = [SelectOptionDict(label=RECOMMENDED_STT_MODEL, value=RECOMMENDED_STT_MODEL)]
-        if not voice_options:
-            fallback_voices = MODEL_VOICES.get(selected_tts_model, VENICE_TTS_VOICES)
-            voice_options = [SelectOptionDict(label=v, value=v) for v in fallback_voices]
 
-        return chat_options, tts_options, stt_options, voice_options, errors
+        return chat_options, tts_options, stt_options, voices_by_model, errors
 
     def _build_options_schema(
         self,
         models_options: list[SelectOptionDict],
         tts_models_options: list[SelectOptionDict],
         stt_models_options: list[SelectOptionDict],
-        voice_options: list[SelectOptionDict] | None = None,
         llm_api_options: list[SelectOptionDict] | None = None,
     ) -> vol.Schema:
         """Build the voluptuous options schema from fetched model lists.
 
-        STT and TTS sub-fields are always included so re-enabling a toggle
+        The TTS voice picker lives on a dedicated follow-up step so its
+        choices can depend on the TTS model the user just selected. STT and
+        TTS sub-fields are otherwise always included so re-enabling a toggle
         immediately shows the configuration fields without needing a second
         save.  Stale values are cleared in ``async_step_init`` when the toggle
         is saved as off.
@@ -443,15 +445,6 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 )
             ),
             vol.Optional(
-                CONF_TTS_VOICE,
-                description={"suggested_value": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)},
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=voice_options or [SelectOptionDict(label=v, value=v) for v in VENICE_TTS_VOICES],
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Optional(
                 CONF_TTS_RESPONSE_FORMAT,
                 description={"suggested_value": options.get(CONF_TTS_RESPONSE_FORMAT, RECOMMENDED_TTS_RESPONSE_FORMAT)},
             ): SelectSelector(
@@ -557,7 +550,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the main options (page 1 of 2)."""
+        """Manage the main options (page 1 of 3)."""
         errors: dict[str, str] = {}
         if user_input is not None:
             # Normalise CONF_LLM_HASS_API: empty list / blank → drop key entirely.
@@ -575,7 +568,8 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     user_input[CONF_LLM_HASS_API] = filtered
 
             if not errors:
-                if not user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
+                tts_enabled = user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)
+                if not tts_enabled:
                     for key in (CONF_TTS_MODEL, CONF_TTS_VOICE, CONF_TTS_RESPONSE_FORMAT, CONF_TTS_SPEED):
                         user_input.pop(key, None)
                 if not user_input.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
@@ -585,12 +579,18 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 # Carry existing skills forward (they're edited on the next step).
                 user_input.setdefault(CONF_SKILLS, self.config_entry.options.get(CONF_SKILLS, []))
                 self._init_data = user_input
+
+                if tts_enabled:
+                    return await self.async_step_tts_voice()
+                # TTS off — drop any stored voice and skip straight to skills.
+                self._init_data.pop(CONF_TTS_VOICE, None)
                 return await self.async_step_skills_and_tools()
 
-        models, tts_models, stt_models, voice_options, fetch_errors = await self._fetch_model_options()
+        models, tts_models, stt_models, voices_by_model, fetch_errors = await self._fetch_model_options()
+        self._voices_by_model = voices_by_model
         llm_api_options = self._fetch_llm_api_options()
 
-        options_schema = self._build_options_schema(models, tts_models, stt_models, voice_options, llm_api_options)
+        options_schema = self._build_options_schema(models, tts_models, stt_models, llm_api_options)
 
         if fetch_errors:
             errors.update(fetch_errors)
@@ -599,6 +599,61 @@ class VeniceAIOptionsFlow(OptionsFlow):
             step_id="init",
             data_schema=options_schema,
             errors=errors,
+        )
+
+    async def async_step_tts_voice(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick a voice for the TTS model chosen on the previous step."""
+        init_data: dict[str, Any] = getattr(self, "_init_data", {})
+        selected_model = init_data.get(
+            CONF_TTS_MODEL,
+            self.config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL),
+        )
+
+        if user_input is not None:
+            init_data[CONF_TTS_VOICE] = user_input[CONF_TTS_VOICE]
+            self._init_data = init_data
+            return await self.async_step_skills_and_tools()
+
+        # Prefer live-fetched voices; fall back to the static map when the API
+        # call in async_step_init failed or returned nothing for this model.
+        voices_by_model: dict[str, list[str]] = getattr(self, "_voices_by_model", {})
+        voices = voices_by_model.get(selected_model) or MODEL_VOICES.get(
+            selected_model, VENICE_TTS_VOICES
+        )
+
+        voice_options = [
+            SelectOptionDict(label=friendly_voice_label(selected_model, v), value=v)
+            for v in voices
+        ]
+
+        previous_voice = self.config_entry.options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)
+        valid_values = {v for v in voices}
+        suggested = previous_voice if previous_voice in valid_values else (
+            voices[0] if voices else RECOMMENDED_TTS_VOICE
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_TTS_VOICE,
+                    description={"suggested_value": suggested},
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=voice_options,
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="tts_voice",
+            data_schema=schema,
+            description_placeholders={
+                "model_label": tts_model_sublabel(selected_model),
+            },
         )
 
     async def async_step_skills_and_tools(
@@ -616,7 +671,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
             skill_manager = await SkillManager.async_get_instance(self.hass)
             await skill_manager.async_load_skills()
             skill_options = [
-                SelectOptionDict(label=s.name, value=s.name)
+                SelectOptionDict(label=f"{s.name} — {s.description}", value=s.name)
                 for s in skill_manager.get_all_skills()
             ]
         except Exception:
@@ -632,9 +687,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
             tools_path = str(tool_manager.user_tools_path)
             loaded = tool_manager.get_all_tools()
             if loaded:
-                tools_names = "\n".join(
-                    f"- **{t.name}** ({t.type}): {t.description}" for t in loaded
-                )
+                tools_names = ", ".join(f"`{t.name}`" for t in loaded)
         except Exception:
             _LOGGER.debug("Could not load tools for options form", exc_info=True)
             tools_names = "(error loading tools)"

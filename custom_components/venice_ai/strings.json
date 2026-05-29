@@ -8,7 +8,8 @@
           },
           "data_description": {
             "api_key": "Your Venice AI API key. Get one at venice.ai → Settings → API Keys."
-          }
+          },
+          "submit": "Next"
         }
       },
       "error": {
@@ -42,7 +43,6 @@
             "context_threshold": "Context Token Threshold",
             "tts_enabled": "Enable Text-to-Speech",
             "tts_model": "TTS Model",
-            "tts_voice": "TTS Voice",
             "tts_response_format": "TTS Audio Format",
             "tts_speed": "TTS Speed",
             "stt_enabled": "Enable Speech-to-Text",
@@ -64,8 +64,7 @@
             "max_tool_iterations": "How many tool-call rounds the agent may run per user message before it stops and returns what it has. Higher values allow more complex multi-step tasks.",
             "context_threshold": "When the conversation exceeds this many tokens, the oldest messages are automatically trimmed to keep the context window under the model's limit.",
             "tts_enabled": "Register Venice AI as a Text-to-Speech provider so voice assistant pipelines can use it for spoken responses.",
-            "tts_model": "The Venice AI model used for speech synthesis.",
-            "tts_voice": "Voice character for speech output.",
+            "tts_model": "The Venice AI model used for speech synthesis. Pricing shown is USD per 1,000,000 characters.",
             "tts_response_format": "Audio format returned by the TTS API. MP3 is the most compatible; WAV is uncompressed; OGG is smaller.",
             "tts_speed": "Playback speed multiplier. 1.0 = normal. Range 0.25–4.0.",
             "stt_enabled": "Register Venice AI as a Speech-to-Text provider so voice assistant pipelines can use it to transcribe spoken input.",
@@ -74,14 +73,24 @@
             "stt_timestamps": "Include word-level timestamps in the transcription response. Requires verbose_json response format."
           }
         },
+        "tts_voice": {
+          "title": "TTS Voice",
+          "description": "Pick a voice for **{model_label}**. Voices are model-specific — change the TTS model on the previous step to see a different list.",
+          "data": {
+            "tts_voice": "TTS Voice"
+          },
+          "data_description": {
+            "tts_voice": "Voice character used for speech output. Only voices supported by the selected TTS model are listed."
+          }
+        },
         "skills_and_tools": {
           "title": "Skills & Function Calling",
-          "description": "**Functions (tools) loaded from {tools_path}:**\n{tools_names}\n\n**How to add your own functions:** Create the file `config/venice_ai/tools.yaml` and define tools as a YAML list. Each tool needs a `name`, `description`, `type`, and `parameters` block. Venice recognises these tool types: `native` (built-in HA actions), `script` (HA scripts), `template` (Jinja2 templates), `web` (HTTP calls), `bash` (shell commands), `sqlite` (database queries), `file` (read/write files), and `composite` (chain multiple tools). Bundled tools from the integration are always available as a baseline and cannot be removed.",
+          "description": "**Active tools:** {tools_names}\n\n[How to add custom tools →](https://github.com/grasponcrypto/venice_ai/blob/main/docs/custom-tools-examples.md)",
           "data": {
             "skills": "Enabled Skills"
           },
           "data_description": {
-            "skills": "Skills inject extra instructions and context into the system prompt. **How to add a skill:** Create a folder at `config/custom_components/venice_ai/skills/[skill-name]/` and place a `SKILL.md` file inside it describing what the skill does. After adding files, use the 'Reload Skills' service to pick them up without restarting. Only skills found on disk appear here."
+            "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/grasponcrypto/venice_ai#skills)"
           }
         }
       }
