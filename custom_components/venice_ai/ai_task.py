@@ -139,11 +139,13 @@ else:
                 raise HomeAssistantError("No user message found in chat log")
 
             # Use the configured chat model from options
-            model = self.entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+            model: str = self.entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
 
-            # Use configured options from config entry instead of hardcoded values
-            max_tokens = self.entry.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
-            temperature = self.entry.options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE)
+            # Use configured options from config entry instead of hardcoded values.
+            # NumberSelector with step=1 returns float from the HA frontend; cast
+            # to the types the Venice API expects.
+            max_tokens: int = int(self.entry.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+            temperature: float = float(self.entry.options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE))
 
             try:
                 response_data = await self._client.chat.completions.create_non_streaming(

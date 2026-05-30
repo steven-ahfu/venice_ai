@@ -1,0 +1,70 @@
+generate_image:
+  name: Generate Image
+  description: Generate an image using Venice AI.
+  fields:
+    config_entry:
+      name: Config Entry
+      description: The Venice AI config entry to use for this service call.
+      required: true
+      selector:
+        config_entry:
+          integration: venice_ai
+    prompt:
+      name: Prompt
+      description: Image description
+      required: true
+      selector:
+        text:
+    size:
+      name: Size
+      description: Image size
+      selector:
+        select:
+          options:
+            - "1024x1024"
+            - "1024x1792"
+            - "1792x1024"
+    quality:
+      name: Quality
+      description: Image quality
+      selector:
+        select:
+          options:
+            - standard
+            - hd
+    style:
+      name: Style
+      description: Image style
+      selector:
+        select:
+          options:
+            - vivid
+            - natural
+
+ai_task:
+  name: VeniceAI AI Task
+  description: Generate structured data using Venice AI.
+  fields:
+    config_entry:
+      name: Config Entry
+      description: The Venice AI config entry to use for this service call.
+      required: true
+      selector:
+        config_entry:
+          integration: venice_ai
+    task:
+      name: Task
+      description: Task description
+      required: true
+      selector:
+        text:
+    structure:
+      name: Structure
+      description: Expected response structure or schema
+      selector:
+        text:
+
+reload_skills:
+  name: Reload Skills
+  description: Reload Venice AI skills from the skills directory on disk.
+  fields: {}

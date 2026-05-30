@@ -7,9 +7,11 @@ import logging
 from collections import OrderedDict
 from typing import Any
 
+from homeassistant.components import conversation as conversation_component
 from homeassistant.components.conversation import (
     HOME_ASSISTANT_AGENT,
     ConversationEntity,
+    ConversationEntityFeature,
     ConversationInput,
     ConversationResult,
     ChatLog,
@@ -21,7 +23,7 @@ from homeassistant.components.conversation import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LLM_HASS_API
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, TemplateError
 from homeassistant.helpers import intent, llm, device_registry as dr, selector
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -39,7 +41,14 @@ from .const import (
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
     RECOMMENDED_DISABLE_THINKING,
+    CONF_ENABLE_WEB_SEARCH,
+    RECOMMENDED_ENABLE_WEB_SEARCH,
+    CONF_CONTINUE_CONVERSATION,
+    RECOMMENDED_CONTINUE_CONVERSATION,
+    CONF_CONTEXT_THRESHOLD,
+    CONF_SKILLS,
     DOMAIN,
+    RECOMMENDED_CONTEXT_THRESHOLD,
     HAS_VOLUPTUOUS_OPENAPI,
     MAX_CHAT_HISTORY_SIZE,
     MAX_CHAT_LOG_LENGTH,
@@ -49,6 +58,8 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+from .functions import get_function
+from .helpers import get_exposed_entities
 
 if HAS_VOLUPTUOUS_OPENAPI:
     from voluptuous_openapi import convert as voluptuous_convert  # type: ignore[import-untyped]
@@ -56,10 +67,44 @@ if HAS_VOLUPTUOUS_OPENAPI:
 _LOGGER = logging.getLogger(__name__)
 
 # Default system prompt for Venice AI
-DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant controlling a smart home. You can control lights, switches, climate, media players, and other devices. Always be concise and helpful."""
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant for {{ ha_name }}. "
+    "You can control lights, switches, climate, media players, and other smart home devices. "
+    "Always be concise and helpful."
+    "{% if skills %}\n\n## Available Skills\n"
+    "{% for skill in skills %}### {{ skill.name }}\n{{ skill.content }}\n{% endfor %}"
+    "{% endif %}"
+)
 
-# Maximum number of tool iterations to prevent infinite loops
-MAX_TOOL_ITERATIONS = 5
+
+def _control_home_assistant_enabled(llm_api: Any) -> bool:
+    """Return whether Home Assistant control/routing is enabled."""
+    if llm_api in (None, "", [], (), {}):
+        return False
+    return True
+
+
+def _hass_result_satisfied(result: ConversationResult | None) -> bool:
+    """Return whether a native Home Assistant result fully handled the request."""
+    return result is not None and getattr(result.response, "error_code", None) is None
+
+
+async def _async_try_hass_agent(
+    hass: HomeAssistant,
+    user_input: ConversationInput,
+    current_agent: Any,
+) -> ConversationResult | None:
+    """Try the built-in Home Assistant agent before Venice."""
+    hass_agent = conversation_component.async_get_agent(hass, HOME_ASSISTANT_AGENT)
+    if hass_agent is None or hass_agent is current_agent:
+        _LOGGER.debug("Home Assistant agent not available for native intent handling")
+        return None
+
+    try:
+        return await hass_agent.async_process(user_input)
+    except Exception as err:
+        _LOGGER.warning("Native Home Assistant handling failed: %s", err)
+        return None
 
 
 def _strip_thinking(text: str) -> str:
@@ -220,7 +265,23 @@ def _convert_chat_log_to_venice_messages(
             messages.append({"role": "user", "content": msg.content})
         elif isinstance(msg, AssistantContent):
             content = _strip_thinking(msg.content) if strip_thinking else msg.content
-            messages.append({"role": "assistant", "content": content})
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.tool_name,
+                            "arguments": json.dumps(tc.tool_args),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            # Guard: some APIs reject empty tool_calls arrays
+            if assistant_msg.get("tool_calls") == []:
+                assistant_msg.pop("tool_calls")
+            messages.append(assistant_msg)
         elif isinstance(msg, ToolResultContent):
             messages.append({
                 "role": "tool",
@@ -228,7 +289,7 @@ def _convert_chat_log_to_venice_messages(
                 "content": json.dumps(msg.tool_result),
             })
         elif isinstance(msg, SystemContent):
-            messages.append({"role": "system", "content": msg.content})
+            _LOGGER.debug("Skipping SystemContent in chat_log to avoid duplicate system prompt")
         else:
             _LOGGER.warning("Unsupported message type for Venice conversion: %s", type(msg))
 
@@ -255,8 +316,33 @@ def _trim_chat_log(chat_log: ChatLog) -> None:
     chat_log.content.extend(trimmed)
 
 
+def _truncate_message_history(chat_log: ChatLog) -> None:
+    """Clear middle of history on token overflow across multiple turns.
+
+    Fires reactively after an API response reports total_tokens exceeding
+    the configured threshold. Only takes effect when multiple user messages
+    have accumulated (last_user_idx > 1). Complements the count-based
+    _trim_chat_log() which runs proactively before each API call.
+    """
+    messages = chat_log.content
+    last_user_idx = None
+    for i in reversed(range(len(messages))):
+        if isinstance(messages[i], UserContent):
+            last_user_idx = i
+            break
+    if last_user_idx is not None and last_user_idx > 1:
+        removed = last_user_idx - 1
+        del messages[1:last_user_idx]
+        _LOGGER.info(
+            "Token threshold exceeded; removed %d messages from conversation history",
+            removed,
+        )
+
+
 class VeniceAIConversationEntity(ConversationEntity):
     """Venice AI conversation entity."""
+
+    _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the entity."""
@@ -295,8 +381,10 @@ class VeniceAIConversationEntity(ConversationEntity):
             _LOGGER.debug("Resuming existing conversation %s (%d messages)", cid, len(self._chat_logs[cid].content))
             return self._chat_logs[cid]
 
-        # New conversation
-        chat_log = ChatLog(conversation_id=cid, content=[])
+        # New conversation. ChatLog requires `hass` as its first dataclass field —
+        # without it instantiation raises TypeError synchronously, which HA's
+        # pipeline surfaces as "Unexpected error during intent recognition".
+        chat_log = ChatLog(hass=self.hass, conversation_id=cid, content=[])
         self._chat_logs[cid] = chat_log
         # Evict least-recently-used if over the limit
         if len(self._chat_logs) > MAX_CHAT_HISTORY_SIZE:
@@ -317,46 +405,96 @@ class VeniceAIConversationEntity(ConversationEntity):
     @property
     def supported_options(self) -> list[str]:
         """Return list of supported options."""
-        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING]
+        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING, CONF_ENABLE_WEB_SEARCH, CONF_CONTINUE_CONVERSATION, CONF_CONTEXT_THRESHOLD]
 
     async def async_process(
         self, user_input: ConversationInput
     ) -> ConversationResult:
         """Process a conversation input."""
         options = self.entry.options
-        model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-        max_tokens = options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
-        temperature = options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE)
-        top_p = options.get(CONF_TOP_P, RECOMMENDED_TOP_P)
-        strip_thinking = options.get(CONF_STRIP_THINKING_RESPONSE, False)
-        prompt_template_str = options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
         llm_api = options.get(CONF_LLM_HASS_API)
+
+        if _control_home_assistant_enabled(llm_api):
+            hass_result = await _async_try_hass_agent(self.hass, user_input, self)
+            if _hass_result_satisfied(hass_result):
+                return hass_result
+
+        return await self._async_process_with_venice(user_input, options, llm_api)
+
+    async def _async_process_with_venice(
+        self,
+        user_input: ConversationInput,
+        options: dict[str, Any],
+        llm_api: Any,
+    ) -> ConversationResult:
+        """Process a conversation input with Venice and optional tool use."""
+        model: str = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        # NumberSelector with step=1 still returns a float from the HA frontend;
+        # the Venice API (and our client typing) expects int for max_tokens.
+        max_tokens: int = int(options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+        temperature: float = float(options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE))
+        top_p: float = float(options.get(CONF_TOP_P, RECOMMENDED_TOP_P))
+        strip_thinking: bool = bool(options.get(CONF_STRIP_THINKING_RESPONSE, False))
+        prompt_template_str = options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
 
         # Render system prompt template with Home Assistant context so
         # template functions (e.g. now(), states(), area_entities()) work.
         try:
             prompt_template = Template(prompt_template_str, self.hass)
-            system_prompt = prompt_template.async_render()
+            exposed_entities = get_exposed_entities(self.hass)
+
+            # Load enabled skills and build skills context for system prompt
+            skills_context: list[dict[str, str]] = []
+            enabled_skill_names = options.get(CONF_SKILLS, [])
+            if enabled_skill_names:
+                try:
+                    from .skills import SkillManager
+                    skill_manager = await SkillManager.async_get_instance(self.hass)
+                    for skill in skill_manager.get_enabled_skills(enabled_skill_names):
+                        skills_context.append({
+                            "name": skill.name,
+                            "description": skill.description,
+                            "content": skill.content,
+                        })
+                except Exception as skills_err:
+                    _LOGGER.warning("Failed to load skills: %s", skills_err)
+
+            system_prompt = prompt_template.async_render(
+                {
+                    "ha_name": self.hass.config.location_name,
+                    "exposed_entities": exposed_entities,
+                    "current_device_id": user_input.device_id,
+                    "user_input": user_input,
+                    "skills": skills_context,
+                },
+                parse_result=False,
+            )
         except TemplateError as err:
             _LOGGER.error("Error rendering prompt template: %s", err)
             raise HomeAssistantError(f"Error rendering prompt: {err}") from err
 
-        # Set up LLM API if configured
+        # Set up LLM API(s) if configured.  Accepts either a list of API ids
+        # (new multi-select form) or a single string (legacy stored value).
         tools: list[llm.Tool] = []
+        llm_context: llm.LLMContext | None = None
         if llm_api:
-            try:
-                llm_context = llm.LLMContext(
-                    platform=DOMAIN,
-                    context=user_input.context,
-                    user_prompt=user_input.text,
-                    language=user_input.language,
-                    assistant=HOME_ASSISTANT_AGENT,
-                    device_id=user_input.device_id,
-                )
-                api = await llm.async_get_api(self.hass, llm_api, llm_context)
-                tools = list(api.tools)
-            except Exception as err:
-                _LOGGER.warning("Failed to get LLM API %s: %s", llm_api, err)
+            if isinstance(llm_api, str):
+                llm_api_ids = [llm_api]
+            else:
+                llm_api_ids = list(llm_api)
+            llm_context = llm.LLMContext(
+                platform=DOMAIN,
+                context=user_input.context,
+                language=user_input.language,
+                assistant=HOME_ASSISTANT_AGENT,
+                device_id=user_input.device_id,
+            )
+            for api_id in llm_api_ids:
+                try:
+                    api = await llm.async_get_api(self.hass, api_id, llm_context)
+                    tools.extend(api.tools)
+                except Exception as err:
+                    _LOGGER.warning("Failed to get LLM API %s: %s", api_id, err)
 
         # Convert tools to Venice format
         venice_tools = []
@@ -377,6 +515,28 @@ class VeniceAIConversationEntity(ConversationEntity):
                 tool_dict["function"]["parameters"] = parameters_schema or {"type": "object", "properties": {}}
             venice_tools.append(tool_dict)
 
+        # Load function tools from the ToolManager (bundled + user file).
+        # Replaces the previous CONF_FUNCTION_TOOLS YAML textbox: tools now
+        # live in default_tools.yaml (shipped) and /config/venice_ai/tools.yaml
+        # (optional user overrides), validated once at load time.
+        function_configs: list[dict] = []
+        try:
+            from .tools import ToolManager
+            tool_manager = await ToolManager.async_get_instance(self.hass)
+            for tool in tool_manager.get_all_tools():
+                fc = tool.config
+                function_configs.append(fc)
+                venice_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": fc.get("parameters", {"type": "object", "properties": {}}),
+                    },
+                })
+        except Exception as tools_err:
+            _LOGGER.error("Failed to load Venice AI tools: %s", tools_err)
+
         # Retrieve existing chat log or create a new one, then append the new user message.
         # History is persisted across calls so the model has full multi-turn context.
         chat_log = self._get_or_create_chat_log(user_input.conversation_id)
@@ -385,7 +545,7 @@ class VeniceAIConversationEntity(ConversationEntity):
         assistant_response_content = None
         text_content = ""
 
-        max_tool_iterations = options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS)
+        max_tool_iterations: int = int(options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS))
 
         try:
             _trim_chat_log(chat_log)
@@ -399,9 +559,14 @@ class VeniceAIConversationEntity(ConversationEntity):
                     raise HomeAssistantError("Message list is empty before sending to API.")
 
                 disable_thinking = options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)
+                enable_web_search = options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
                 venice_params: dict[str, Any] | None = None
-                if disable_thinking:
-                    venice_params = {"disable_thinking": True}
+                if disable_thinking or enable_web_search:
+                    venice_params = {}
+                    if disable_thinking:
+                        venice_params["disable_thinking"] = True
+                    if enable_web_search:
+                        venice_params["enable_web_search"] = "auto"
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,
                     messages=messages,
@@ -446,14 +611,36 @@ class VeniceAIConversationEntity(ConversationEntity):
                     text_content = _strip_thinking(text_content)
                 tool_calls = message.get("tool_calls", [])
 
+                # Reactive token-based truncation: clear history middle if context is filling up
+                usage = response_data.get("usage", {}) if isinstance(response_data, dict) else {}
+                total_tokens: int = int(usage.get("total_tokens", 0) or 0)
+                context_threshold: int = int(options.get(CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD))
+                if total_tokens > context_threshold:
+                    _truncate_message_history(chat_log)
+
                 if not tool_calls:
                     assistant_response_content = text_content
                     break
 
                 # Process tool calls
+                # Build ToolInput list for AssistantContent.tool_calls so history is correct
+                tool_inputs_for_history: list[llm.ToolInput] = []
+                for tc in tool_calls:
+                    cid = tc.get("id")
+                    fn = tc.get("function", {})
+                    tname = fn.get("name")
+                    try:
+                        targs = json.loads(fn.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        targs = {}
+                    if cid and tname:
+                        tool_inputs_for_history.append(
+                            llm.ToolInput(id=cid, tool_name=tname, tool_args=targs)
+                        )
                 assistant_content = AssistantContent(
-                    agent_id="venice_ai",
+                    agent_id=self.entity_id,
                     content=text_content,
+                    tool_calls=tool_inputs_for_history or None,
                 )
                 chat_log.content.append(assistant_content)
 
@@ -479,32 +666,48 @@ class VeniceAIConversationEntity(ConversationEntity):
                         )
                         continue
 
-                    # Find matching tool and invoke via the public HA LLM API
+                    # Find matching tool: first check HA LLM API tools, then custom function configs
                     tool_result = None
+                    matched_ha_tool = False
                     for tool in tools:
                         if tool.name == tool_name:
+                            matched_ha_tool = True
                             try:
                                 tool_input = llm.ToolInput(
+                                    id=call_id,
                                     tool_name=tool_name,
                                     tool_args=tool_args,
-                                    platform=DOMAIN,
-                                    context=user_input.context,
-                                    user_prompt=user_input.text,
-                                    assistant=HOME_ASSISTANT_AGENT,
-                                    device_id=user_input.device_id,
                                 )
-                                tool_result = await tool.async_call(self.hass, tool_input)
+                                tool_result = await tool.async_call(
+                                    self.hass, tool_input, llm_context
+                                )
                             except Exception as tool_err:
                                 _LOGGER.warning("Tool %s failed: %s", tool_name, tool_err)
                                 tool_result = {"error": str(tool_err)}
                             break
 
+                    if not matched_ha_tool:
+                        # Check custom function configs
+                        for fc in function_configs:
+                            if fc.get("name") == tool_name:
+                                try:
+                                    fn = get_function(fc["type"])
+                                    tool_result = await fn.execute(
+                                        self.hass, fc, tool_args, llm_context, exposed_entities
+                                    )
+                                except Exception as fn_err:
+                                    _LOGGER.warning("Function %s failed: %s", tool_name, fn_err)
+                                    tool_result = {"error": str(fn_err)}
+                                break
+
                     if tool_result is None:
-                        _LOGGER.warning("Tool %s not found", tool_name)
+                        _LOGGER.warning("Tool %s not found in HA tools or custom functions", tool_name)
                         tool_result = {"error": f"Tool {tool_name} not found"}
 
                     tool_result_content = ToolResultContent(
+                        agent_id=self.entity_id,
                         tool_call_id=call_id,
+                        tool_name=tool_name,
                         tool_result=tool_result,
                     )
                     chat_log.content.append(tool_result_content)
@@ -555,7 +758,7 @@ class VeniceAIConversationEntity(ConversationEntity):
 
         # Persist the final assistant turn so subsequent calls see the full history.
         chat_log.content.append(
-            AssistantContent(agent_id="venice_ai", content=assistant_response_content)
+            AssistantContent(agent_id=self.entity_id, content=assistant_response_content)
         )
         _trim_chat_log(chat_log)
 
@@ -563,23 +766,22 @@ class VeniceAIConversationEntity(ConversationEntity):
         intent_response = intent.IntentResponse(language=user_input.language)
         intent_response.async_set_speech(assistant_response_content)
 
+        # Signal HA to keep listening if the response ends with a question
+        # and the user has enabled extended conversation in options.
+        should_continue = (
+            options.get(CONF_CONTINUE_CONVERSATION, RECOMMENDED_CONTINUE_CONVERSATION)
+            and assistant_response_content.rstrip().endswith("?")
+        )
+
         return ConversationResult(
             conversation_id=chat_log.conversation_id,
             response=intent_response,
+            continue_conversation=should_continue,
         )
 
-    @callback
-    def async_added_to_hass(self) -> None:
-        """Register update listener."""
-        self.entry.async_on_unload(
-            self.entry.add_update_listener(self._async_entry_updated)
-        )
-
-    @callback
-    def _async_entry_updated(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle options update."""
-        self.entry = entry
-        self._client = entry.runtime_data.client
+    async def async_added_to_hass(self) -> None:
+        """Write state once added so entity_id is resolved before first use."""
+        self.async_write_ha_state()
 
 
 async def async_setup_entry(

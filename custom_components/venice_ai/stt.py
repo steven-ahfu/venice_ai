@@ -18,11 +18,13 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_STT_ENABLED,
     CONF_STT_MODEL,
     CONF_STT_RESPONSE_FORMAT,
     CONF_STT_TIMESTAMPS,
     DOMAIN,
     MAX_STT_BUFFER_SIZE,
+    RECOMMENDED_STT_ENABLED,
     RECOMMENDED_STT_MODEL,
     RECOMMENDED_STT_RESPONSE_FORMAT,
     RECOMMENDED_STT_TIMESTAMPS,
@@ -66,7 +68,17 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Venice AI STT entity."""
+    """Set up Venice AI STT entity.
+
+    Honors the per-entry ``CONF_STT_ENABLED`` toggle: when the user has
+    disabled Venice STT in the options flow, no entity is registered so the
+    voice-pipeline UI shows only the user's preferred STT engine.  The
+    integration's update listener already reloads the entry on options
+    changes, so toggling this option takes effect immediately.
+    """
+    if not entry.options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
+        _LOGGER.debug("Venice AI STT disabled by option; skipping entity setup")
+        return
     async_add_entities([VeniceAISTT(entry)])
 
 

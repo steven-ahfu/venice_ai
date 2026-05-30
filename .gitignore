@@ -1,6 +1,9 @@
 # mine
 open_ai_example/
-docs/
+docs/*
+!docs/custom-tools-examples.md
+.agents/
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -180,3 +183,4 @@ tasks/
 scripts/
 local_documents/
 .cline/"CODE_REVIEW.md"  
+deploy.sh

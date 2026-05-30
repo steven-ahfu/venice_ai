@@ -39,13 +39,7 @@ try:
 except ImportError:
     _HAS_AI_TASK = False
 
-from .client import AsyncVeniceAIClient, VeniceAIError, AuthenticationError
-
-# Backwards-compatible import: older client.py may not define RateLimitError
-try:
-    from .client import RateLimitError
-except ImportError:
-    RateLimitError = None  # type: ignore[misc, assignment]
+from .client import AsyncVeniceAIClient, VeniceAIError, AuthenticationError, RateLimitError
 from .const import (
     CONF_CHAT_MODEL,
     CONF_TTS_MODEL,
@@ -184,11 +178,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             structure = call.data.get("structure")
 
             gen_task = ai_task.GenDataTask(
+                name="Venice AI Task",
                 instructions=task_text,
                 structure=structure,
             )
 
             chat_log = conversation.ChatLog(
+                hass=hass,
                 conversation_id=str(uuid.uuid4()),
                 content=[
                     conversation.UserContent(content=task_text)
@@ -249,6 +245,38 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         ),
         supports_response=SupportsResponse.ONLY,
     )
+
+    async def reload_skills(call: ServiceCall) -> ServiceResponse:
+        """Reload Venice AI skills from disk."""
+        from .skills import SkillManager
+        manager = await SkillManager.async_get_instance(hass)
+        # Force re-scan
+        count = await manager.async_load_skills()
+        return {"loaded_skills": count}
+
+    hass.services.async_register(
+        DOMAIN,
+        "reload_skills",
+        reload_skills,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def reload_tools(call: ServiceCall) -> ServiceResponse:
+        """Reload Venice AI tools from bundled defaults + user file."""
+        from .tools import ToolManager
+        manager = await ToolManager.async_get_instance(hass)
+        count = await manager.async_load_tools()
+        return {"loaded_tools": count}
+
+    hass.services.async_register(
+        DOMAIN,
+        "reload_tools",
+        reload_tools,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
     return True
 
 
@@ -286,7 +314,7 @@ def _async_on_coordinator_update(
         _LOGGER.warning(
             "Coordinator auth failure for entry %s — repair issue created", entry_id
         )
-    elif RateLimitError is not None and isinstance(cause, RateLimitError):
+    elif isinstance(cause, RateLimitError):
         ir.async_create_issue(
             hass,
             DOMAIN,

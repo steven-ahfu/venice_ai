@@ -5,7 +5,11 @@
           "title": "Venice AI Setup",
           "data": {
             "api_key": "Venice AI API Key"
-          }
+          },
+          "data_description": {
+            "api_key": "Your Venice AI API key. Get one at venice.ai → Settings → API Keys."
+          },
+          "submit": "Next"
         }
       },
       "error": {
@@ -23,24 +27,72 @@
       "step": {
         "init": {
           "title": "Venice AI Options",
-          "description": "Configure Venice AI settings. Only models with function calling support are shown.",
+          "description": "Configure Venice AI conversation, voice, and model settings.",
+          "submit": "Next",
           "data": {
             "chat_model": "AI Model",
             "prompt": "System Prompt",
             "llm_hass_api": "Control Home Assistant",
-            "temperature": "Temperature (0-2)",
-            "top_p": "Top P (0-1)",
+            "temperature": "Temperature",
+            "top_p": "Top P",
             "max_tokens": "Max Tokens",
-            "strip_thinking_response": "Strip thinking response (for reasoning models)",
-            "disable_thinking": "Disable thinking (for reasoning models)",
+            "strip_thinking_response": "Strip Thinking Response",
+            "disable_thinking": "Disable Thinking",
+            "continue_conversation": "Continue Conversation",
+            "enable_web_search": "Enable Web Search",
             "max_tool_iterations": "Max Tool Iterations",
+            "context_threshold": "Context Token Threshold",
+            "tts_enabled": "Enable Text-to-Speech",
             "tts_model": "TTS Model",
-            "tts_voice": "TTS Voice",
-            "tts_response_format": "TTS Response Format",
+            "tts_response_format": "TTS Audio Format",
             "tts_speed": "TTS Speed",
+            "stt_enabled": "Enable Speech-to-Text",
             "stt_model": "STT Model",
             "stt_response_format": "STT Response Format",
-            "stt_timestamps": "STT Include Timestamps"
+            "stt_timestamps": "Include Word Timestamps"
+          },
+          "data_description": {
+            "chat_model": "Only models with function-calling support are listed. The ~$X/M figure is an estimated blended cost per 1M chat tokens, assuming a typical 60% input / 40% output mix. See venice.ai/models for the full list.",
+            "prompt": "The system prompt sent to the AI before every conversation. Supports {{ha_name}}, {{user_name}}, and {{llm_context}} placeholders.",
+            "llm_hass_api": "Expose Home Assistant tools (entities, scripts, etc.) to the AI so it can control your smart home. Select 'Assist' to use the standard HA tool set.",
+            "temperature": "Controls response randomness. Lower values (e.g. 0.2) = focused and deterministic. Higher values (e.g. 1.5) = creative and varied. Default 0.7, range 0–2.",
+            "top_p": "Nucleus sampling: only the top tokens whose combined probability reaches this threshold are considered. Lower = safer output. Default 0.9, range 0–1. Tune Temperature OR Top P, not both.",
+            "max_tokens": "Maximum number of tokens the model may generate per reply. 2048 covers most conversations; increase for long-form output. Range 1–32768.",
+            "strip_thinking_response": "For reasoning models only. Removes the internal chain-of-thought block before showing the reply to the user.",
+            "disable_thinking": "For reasoning models only. Skips the reasoning step entirely — faster responses but less depth on complex questions.",
+            "continue_conversation": "Keep the microphone open after the AI responds with a question, enabling back-and-forth voice conversations without pressing a button.",
+            "enable_web_search": "Allow the AI to search the web when answering questions.",
+            "max_tool_iterations": "How many tool-call rounds the agent may run per user message before it stops and returns what it has. Higher values allow more complex multi-step tasks.",
+            "context_threshold": "When the conversation exceeds this many tokens, the oldest messages are automatically trimmed to keep the context window under the model's limit.",
+            "tts_enabled": "Register Venice AI as a Text-to-Speech provider so voice assistant pipelines can use it for spoken responses.",
+            "tts_model": "The Venice AI model used for speech synthesis. Pricing shown is USD per 1,000,000 characters.",
+            "tts_response_format": "Audio format returned by the TTS API. MP3 is the most compatible; WAV is uncompressed; OGG is smaller.",
+            "tts_speed": "Playback speed multiplier. 1.0 = normal. Range 0.25–4.0.",
+            "stt_enabled": "Register Venice AI as a Speech-to-Text provider so voice assistant pipelines can use it to transcribe spoken input.",
+            "stt_model": "The Venice AI model used for speech transcription.",
+            "stt_response_format": "Format of the transcription response. JSON includes metadata; text is plain; verbose_json adds word-level detail; SRT/VTT are subtitle formats.",
+            "stt_timestamps": "Include word-level timestamps in the transcription response. Requires verbose_json response format."
+          }
+        },
+        "tts_voice": {
+          "title": "TTS Voice",
+          "description": "Pick a voice for **{model_label}**. Voices are model-specific — change the TTS model on the previous step to see a different list.",
+          "submit": "Next",
+          "data": {
+            "tts_voice": "TTS Voice"
+          },
+          "data_description": {
+            "tts_voice": "Voice character used for speech output. Only voices supported by the selected TTS model are listed."
+          }
+        },
+        "skills_and_tools": {
+          "title": "Skills & Function Calling",
+          "description": "**Active tools:** {tools_names}\n\n[How to add custom tools →](https://github.com/steven-ahfu/venice_ai/blob/new-features/docs/custom-tools-examples.md)",
+          "data": {
+            "skills": "Enabled Skills"
+          },
+          "data_description": {
+            "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/steven-ahfu/venice_ai/tree/new-features#skills)"
           }
         }
       }
@@ -123,6 +175,14 @@
       "conversation": {
         "name": "VeniceAI Conversation",
         "description": "Conversation agent"
+      },
+      "reload_skills": {
+        "name": "Reload Skills",
+        "description": "Reload Venice AI skills from the skills directory on disk."
+      },
+      "reload_tools": {
+        "name": "Reload Tools",
+        "description": "Reload Venice AI tools from default_tools.yaml and the optional config/venice_ai/tools.yaml file."
       }
     }
   }
