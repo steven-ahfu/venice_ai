@@ -89,6 +89,58 @@ async def test_config_flow_user_step_invalid_auth(monkeypatch):
     assert result["errors"]["base"] == "invalid_auth"
 
 
+def _schema_options_for(result, key):
+    """Pull the SelectSelector options for a given schema key from a form result."""
+    for marker, selector in result["data_schema"].schema.items():
+        if marker.key == key:
+            return selector.config.options
+    raise AssertionError(f"key {key!r} not found in schema")
+
+
+@pytest.mark.asyncio
+async def test_options_flow_marks_only_web_search_models(monkeypatch):
+    monkeypatch.setattr(cfg_flow.llm, "async_get_apis", lambda hass: [])
+
+    models = [
+        {
+            "id": "web-model",
+            "model_spec": {
+                "name": "Web Model",
+                "capabilities": {
+                    "supportsFunctionCalling": True,
+                    "supportsWebSearch": True,
+                },
+            },
+        },
+        {
+            "id": "plain-model",
+            "model_spec": {
+                "name": "Plain Model",
+                "capabilities": {
+                    "supportsFunctionCalling": True,
+                    "supportsWebSearch": False,
+                },
+            },
+        },
+    ]
+
+    client = DummyClient("k")
+    client.models = DummyModels(result=models)
+
+    entry = DummyConfigEntry(options={}, runtime_data=client)
+    flow = cfg_flow.VeniceAIOptionsFlow(entry)
+    flow.hass = object()
+    flow.config_entry = entry
+
+    result = await flow.async_step_init(None)
+
+    labels = {opt["value"]: opt["label"] for opt in _schema_options_for(result, cfg_flow.CONF_CHAT_MODEL)}
+    assert labels["web-model"].startswith("🔍 ")
+    assert not labels["plain-model"].startswith("🔍")
+    # The plain model must not carry the marker anywhere in its label.
+    assert "🔍" not in labels["plain-model"]
+
+
 @pytest.mark.asyncio
 async def test_options_flow_sanitizes_llm_api_ids(monkeypatch):
     apis = [DummyAPI("valid_api", "Valid API"), DummyAPI("other_api", "Other API")]
