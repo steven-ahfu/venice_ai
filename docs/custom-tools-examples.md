@@ -55,9 +55,9 @@ variables.
 | `native` | Call Home Assistant directly | `operation`: `execute_service` or `get_history` |
 | `template` | Render a Jinja2 template | `value_template`, optional `parse_result` |
 | `script` | Run a HA script sequence | `sequence` (arguments become run variables) |
-| `rest` | HTTP request | `resource` / `resource_template`, `method`, `headers`, `payload` / `payload_template`, `value_template` |
-| `scrape` | Fetch a page and extract with a CSS selector | `resource` / `resource_template`, `select`, `attribute`, `index`, `value_template` |
-| `bash` | Run a shell command (guarded) | `command`, `cwd`, `restrict_to_workspace` |
+| `rest` | HTTP request (rejects private/loopback IPs unless `allow_internal_urls: true`) | `resource` / `resource_template`, `method`, `headers`, `payload` / `payload_template`, `value_template`, `allow_internal_urls` |
+| `scrape` | Fetch a page and extract with a CSS selector (same private-IP guard as `rest`) | `resource` / `resource_template`, `select`, `attribute`, `index`, `value_template`, `allow_internal_urls` |
+| `bash` | Run a shell command (denylist tripwire only — full shell access, NOT a sandbox) | `command`, `cwd` |
 | `read_file` | Read a file from the workspace | `path`, optional `allow_dir` |
 | `write_file` | Write a file to the workspace | `path`, `content`, optional `allow_dir` |
 | `edit_file` | Find/replace text in a workspace file | `path`, `old_text`, `new_text`, optional `allow_dir` |

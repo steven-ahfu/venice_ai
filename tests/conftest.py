@@ -49,7 +49,10 @@ class _ConfigEntry:
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
-class _ConfigFlow: pass
+class _ConfigFlow:
+    def __init_subclass__(cls, **kwargs):
+        # HA's real ConfigFlow accepts `domain=...` via PEP 487; absorb it.
+        super().__init_subclass__()
 class _OptionsFlow: pass
 
 _stub(

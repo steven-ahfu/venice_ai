@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -107,11 +108,17 @@ async def _async_try_hass_agent(
         return None
 
 
+_VENICE_THINKING_RE = re.compile(r" thinking\b.*? end of thinking\b", re.DOTALL | re.IGNORECASE)
+
+
 def _strip_thinking(text: str) -> str:
     """Remove <think>…</think> (or  thinking… end of thinking ) blocks from model output.
 
     Handles both the XML-style tags used by some reasoning models and the
     literal `` thinking`` / `` end of thinking`` markers emitted by Venice AI.
+    Only matched marker pairs are stripped; an unmatched Venice opener is left
+    in place so legitimate prose containing the phrase ``end of thinking`` is
+    not silently truncated.
     """
     if not text:
         return text
@@ -126,12 +133,28 @@ def _strip_thinking(text: str) -> str:
             text = text[:start].strip()
             break
         text = text[:start] + text[end + 8:]
-    # Venice-style  thinking… end of thinking
-    if " thinking" in text:
-        parts = text.split(" end of thinking")
-        if len(parts) > 1:
-            text = parts[-1].strip()
+    # Venice-style  thinking… end of thinking — strip only matched pairs.
+    text = _VENICE_THINKING_RE.sub("", text)
     return text.strip()
+
+
+def _build_venice_params(
+    disable_thinking: bool, enable_web_search: bool
+) -> dict[str, Any] | None:
+    """Assemble the ``venice_parameters`` payload, or None if both flags are off.
+
+    Returning None (not an empty dict) matters because an empty dict still
+    serialises as ``"venice_parameters": {}`` on the wire, which some Venice
+    backends reject.
+    """
+    if not (disable_thinking or enable_web_search):
+        return None
+    params: dict[str, Any] = {}
+    if disable_thinking:
+        params["disable_thinking"] = True
+    if enable_web_search:
+        params["enable_web_search"] = "auto"
+    return params
 
 
 def _convert_schema_to_hashable(obj: Any) -> Any:
@@ -558,15 +581,10 @@ class VeniceAIConversationEntity(ConversationEntity):
                     _LOGGER.error("Message list is empty before sending to API.")
                     raise HomeAssistantError("Message list is empty before sending to API.")
 
-                disable_thinking = options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING)
-                enable_web_search = options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
-                venice_params: dict[str, Any] | None = None
-                if disable_thinking or enable_web_search:
-                    venice_params = {}
-                    if disable_thinking:
-                        venice_params["disable_thinking"] = True
-                    if enable_web_search:
-                        venice_params["enable_web_search"] = "auto"
+                venice_params = _build_venice_params(
+                    disable_thinking=options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING),
+                    enable_web_search=options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH),
+                )
                 response_data = await self._client.chat.completions.create_non_streaming(
                     model=model,
                     messages=messages,

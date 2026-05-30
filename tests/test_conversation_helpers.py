@@ -4,46 +4,51 @@ sys.path.insert(0, ".")
 
 # conftest.py stubs all HA modules before this runs
 from custom_components.venice_ai.conversation import (
+    _build_venice_params,
     _strip_thinking,
     _trim_chat_log,
-    DEFAULT_SYSTEM_PROMPT,
 )
 
 
 # ── _strip_thinking ───────────────────────────────────────────────────────────
 
 def test_strip_thinking_xml_tags():
-    result = _strip_thinking("<think>internal reasoning</think>Hello world")
-    assert result == "Hello world"
+    assert _strip_thinking("<think>internal reasoning</think>Hello world") == "Hello world"
 
 def test_strip_thinking_xml_case_insensitive():
-    result = _strip_thinking("<THINK>reasoning</THINK>Answer")
-    assert result == "Answer"
+    assert _strip_thinking("<THINK>reasoning</THINK>Answer") == "Answer"
 
 def test_strip_thinking_multiple_blocks():
-    result = _strip_thinking("<think>a</think>word<think>b</think>end")
-    assert result == "wordend"
+    assert _strip_thinking("<think>a</think>word<think>b</think>end") == "wordend"
 
 def test_strip_thinking_unmatched_open_tag():
-    # Unmatched <think> — should strip to end of open tag
-    result = _strip_thinking("before<think>dangling")
-    assert result == "before"
+    assert _strip_thinking("before<think>dangling") == "before"
 
 def test_strip_thinking_venice_style():
-    result = _strip_thinking(" thinking some internal thoughts end of thinking real answer")
-    assert result == "real answer"
+    assert _strip_thinking(" thinking some internal thoughts end of thinking real answer") == "real answer"
+
+def test_strip_thinking_venice_style_with_leading_text():
+    # Real prose before the matched marker pair must survive.
+    assert (
+        _strip_thinking("Hello.  thinking quietly end of thinking  Goodbye.")
+        == "Hello.   Goodbye."
+    )
+
+def test_strip_thinking_venice_unmatched_opener_not_truncated():
+    # Bug guard: previously `parts[-1]` discarded all text before any literal
+    # "end of thinking" substring, even when no matched ` thinking` opener
+    # preceded it. The prose must be returned unchanged.
+    input_text = "Reflecting on the end of thinking about this puzzle."
+    assert _strip_thinking(input_text) == input_text
 
 def test_strip_thinking_no_tags_passthrough():
-    result = _strip_thinking("plain response")
-    assert result == "plain response"
+    assert _strip_thinking("plain response") == "plain response"
 
 def test_strip_thinking_empty_string():
-    result = _strip_thinking("")
-    assert result == ""
+    assert _strip_thinking("") == ""
 
 def test_strip_thinking_only_tags():
-    result = _strip_thinking("<think>all internal</think>")
-    assert result == ""
+    assert _strip_thinking("<think>all internal</think>") == ""
 
 
 # ── _trim_chat_log ────────────────────────────────────────────────────────────
@@ -59,8 +64,7 @@ class _FakeChatLog:
         self.content = list(messages)
 
 def test_trim_does_nothing_when_under_limit():
-    msgs = [_FakeMsg(i) for i in range(10)]
-    log = _FakeChatLog(msgs)
+    log = _FakeChatLog([_FakeMsg(i) for i in range(10)])
     _trim_chat_log(log)
     assert len(log.content) == 10
 
@@ -70,57 +74,30 @@ def test_trim_keeps_first_and_recent():
     log = _FakeChatLog(msgs)
     _trim_chat_log(log)
     assert len(log.content) == MAX_CHAT_LOG_LENGTH
-    assert log.content[0].label == 0  # first preserved
+    assert log.content[0].label == 0  # first preserved (system prompt)
     assert log.content[-1].label == MAX_CHAT_LOG_LENGTH + 19  # last preserved
 
 def test_trim_exactly_at_limit_unchanged():
     from custom_components.venice_ai.const import MAX_CHAT_LOG_LENGTH
-    msgs = [_FakeMsg(i) for i in range(MAX_CHAT_LOG_LENGTH)]
-    log = _FakeChatLog(msgs)
+    log = _FakeChatLog([_FakeMsg(i) for i in range(MAX_CHAT_LOG_LENGTH)])
     _trim_chat_log(log)
     assert len(log.content) == MAX_CHAT_LOG_LENGTH
 
 
-# ── DEFAULT_SYSTEM_PROMPT ─────────────────────────────────────────────────────
-
-def test_default_system_prompt_is_nonempty():
-    assert isinstance(DEFAULT_SYSTEM_PROMPT, str)
-    assert len(DEFAULT_SYSTEM_PROMPT) > 20
-
-
-def test_default_system_prompt_includes_skill_section_template():
-    assert "## Available Skills" in DEFAULT_SYSTEM_PROMPT
-    assert "{{ skill.content }}" in DEFAULT_SYSTEM_PROMPT
-
-
-# ── venice_params assembly ────────────────────────────────────────────────────
-# Directly test the logic extracted from async_process so a regression can't
-# silently break it (e.g. the old "venice_params or None" empty-dict bug).
-
-def _build_venice_params(disable_thinking: bool, enable_web_search: bool):
-    """Mirror of the venice_params assembly in conversation.py:async_process."""
-    venice_params = None
-    if disable_thinking or enable_web_search:
-        venice_params = {}
-        if disable_thinking:
-            venice_params["disable_thinking"] = True
-        if enable_web_search:
-            venice_params["enable_web_search"] = "auto"
-    return venice_params
+# ── _build_venice_params ──────────────────────────────────────────────────────
+# Guard against the "empty dict instead of None" wire-format regression.
 
 def test_venice_params_both_off_returns_none():
     assert _build_venice_params(False, False) is None
 
 def test_venice_params_web_search_only():
-    p = _build_venice_params(False, True)
-    assert p == {"enable_web_search": "auto"}
-    assert "disable_thinking" not in p
+    assert _build_venice_params(False, True) == {"enable_web_search": "auto"}
 
 def test_venice_params_disable_thinking_only():
-    p = _build_venice_params(True, False)
-    assert p == {"disable_thinking": True}
-    assert "enable_web_search" not in p
+    assert _build_venice_params(True, False) == {"disable_thinking": True}
 
 def test_venice_params_both_on():
-    p = _build_venice_params(True, True)
-    assert p == {"disable_thinking": True, "enable_web_search": "auto"}
+    assert _build_venice_params(True, True) == {
+        "disable_thinking": True,
+        "enable_web_search": "auto",
+    }

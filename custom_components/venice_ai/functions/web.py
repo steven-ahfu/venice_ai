@@ -45,8 +45,11 @@ latest Hacker News headline (scrape):
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.template import Template
@@ -55,6 +58,34 @@ from homeassistant.helpers.httpx_client import get_async_client
 from .base import Function
 
 _LOGGER = logging.getLogger(__name__)
+
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+
+
+def _assert_url_safe(url: str, allow_internal: bool) -> None:
+    """Reject schemes other than http(s) and (unless opted in) URLs that resolve
+    to loopback / link-local / private / reserved IP space.
+
+    HA usually runs alongside other unauthenticated services on the local network,
+    so without this guard an LLM-controlled ``rest`` or ``scrape`` tool can probe
+    cloud metadata (169.254.169.254), the HA REST API, or internal admin panels.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"URL scheme '{parsed.scheme}' is not allowed")
+    if allow_internal:
+        return
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL is missing a hostname")
+    try:
+        addrs = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except OSError as err:
+        raise ValueError(f"Cannot resolve host '{host}': {err}") from err
+    for addr in addrs:
+        ip = ipaddress.ip_address(addr)
+        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise ValueError(f"URL host '{host}' resolves to non-public address {addr}")
 
 
 class RestFunction(Function):
@@ -91,6 +122,9 @@ class RestFunction(Function):
                 payload = Template(function_config["payload_template"], hass).async_render(arguments, parse_result=False)
             elif function_config.get("payload"):
                 payload = function_config["payload"]
+
+            allow_internal = bool(function_config.get("allow_internal_urls", False))
+            _assert_url_safe(resource, allow_internal)
 
             client = get_async_client(hass)
             response = await client.request(method, resource, content=payload, headers=headers)
@@ -139,6 +173,9 @@ class ScrapeFunction(Function):
             resource = function_config.get("resource", "")
             if function_config.get("resource_template"):
                 resource = Template(function_config["resource_template"], hass).async_render(arguments, parse_result=False)
+
+            allow_internal = bool(function_config.get("allow_internal_urls", False))
+            _assert_url_safe(resource, allow_internal)
 
             client = get_async_client(hass)
             response = await client.get(resource)

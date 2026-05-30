@@ -86,6 +86,23 @@ except ImportError:
     _LOGGER.warning("Could not import DEFAULT_SYSTEM_PROMPT from conversation.py, using fallback.")
     DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant."
 
+def apply_toggle_cleanup(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Drop TTS/STT sub-fields when their respective toggle is off.
+
+    Mutates and returns ``user_input`` so the OptionsFlow's saved data only
+    carries keys that match the user's toggle state — otherwise stale sub-field
+    values can re-enable an entity the user just disabled the next time the
+    options dict is replayed (HA merges new options over the previous dict).
+    """
+    if not user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
+        for key in (CONF_TTS_MODEL, CONF_TTS_VOICE, CONF_TTS_RESPONSE_FORMAT, CONF_TTS_SPEED):
+            user_input.pop(key, None)
+    if not user_input.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
+        for key in (CONF_STT_MODEL, CONF_STT_RESPONSE_FORMAT, CONF_STT_TIMESTAMPS):
+            user_input.pop(key, None)
+    return user_input
+
+
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_API_KEY): cv.string,
@@ -592,12 +609,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
             if not errors:
                 tts_enabled = user_input.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED)
-                if not tts_enabled:
-                    for key in (CONF_TTS_MODEL, CONF_TTS_VOICE, CONF_TTS_RESPONSE_FORMAT, CONF_TTS_SPEED):
-                        user_input.pop(key, None)
-                if not user_input.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
-                    for key in (CONF_STT_MODEL, CONF_STT_RESPONSE_FORMAT, CONF_STT_TIMESTAMPS):
-                        user_input.pop(key, None)
+                apply_toggle_cleanup(user_input)
 
                 # Carry existing skills forward (they're edited on the next step).
                 user_input.setdefault(CONF_SKILLS, self.config_entry.options.get(CONF_SKILLS, []))

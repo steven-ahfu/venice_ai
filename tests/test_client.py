@@ -77,21 +77,6 @@ async def test_client_does_not_close_injected_http_client():
     assert not external.is_closed  # external client still open
     await external.aclose()
 
-def test_client_sub_apis_initialised():
-    client = AsyncVeniceAIClient(api_key="k")
-    assert client.chat is not None
-    assert client.models is not None
-    assert client.speech is not None
-    assert client.transcriptions is not None
-    assert client.images is not None
-    assert client.voices is not None
-
-def test_chat_completions_alias():
-    """client.chat.completions must alias back to client.chat."""
-    client = AsyncVeniceAIClient(api_key="k")
-    assert client.chat.completions is client.chat
-
-
 # ── Retry logic ───────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

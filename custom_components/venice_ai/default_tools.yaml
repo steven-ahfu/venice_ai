@@ -73,3 +73,111 @@
         description: ISO 8601 end time. Defaults to now.
     required:
       - entity_ids
+
+# ── Timers and alarms ────────────────────────────────────────────────────────
+# These wrap the HACS integration `nirnachmani/HA-Alarm-Clock` (domain
+# `ha_alarm_clock`). They use the `alarm_clock` native operation which handles
+# "in N minutes" / "at HH:MM" parsing in Python and dispatches the actual
+# service call in one step. If the upstream integration isn't installed,
+# calls return a "service not found" error — tell the user to install it.
+
+- name: set_timer
+  type: native
+  operation: alarm_clock_set_timer
+  description: >-
+    Set a countdown timer for a duration like "5 minutes", "1h30m", or
+    "90s". Use whenever the user asks to start, set, or create a timer.
+    Give each a distinct name so it can be cancelled later.
+  parameters:
+    type: object
+    properties:
+      duration:
+        type: string
+        description: 'Duration like "5 minutes", "1h30m", "90s", or "00:05:00".'
+      name:
+        type: string
+        description: Short label (e.g. "pasta", "laundry").
+      media_player:
+        type: string
+        description: Optional media_player entity_id to ring on.
+    required: [duration, name]
+
+- name: set_alarm
+  type: native
+  operation: alarm_clock_set_alarm
+  description: >-
+    Set an alarm for a specific clock time like "7:30 AM", "07:30",
+    "18:00", or an ISO 8601 timestamp. Use for clock-based alarms rather
+    than countdown timers.
+  parameters:
+    type: object
+    properties:
+      time:
+        type: string
+        description: 'Time like "07:30", "7:30 AM", or an ISO 8601 timestamp.'
+      name:
+        type: string
+        description: Short label (e.g. "morning", "meeting").
+      date:
+        type: string
+        description: Optional YYYY-MM-DD. Defaults to next future occurrence.
+      repeat:
+        type: string
+        enum: [once, daily, weekdays, weekends]
+        description: How often to repeat. Default "once".
+      media_player:
+        type: string
+        description: Optional media_player entity_id to ring on.
+    required: [time, name]
+
+- name: list_timers_alarms
+  type: native
+  operation: alarm_clock_list
+  description: >-
+    List all active timers and alarms with their names and fire times.
+    Use to answer "how much time left on my timer?" or "what alarms do I
+    have set?".
+  parameters:
+    type: object
+    properties: {}
+
+- name: cancel_timer_alarm
+  type: native
+  operation: alarm_clock_cancel
+  description: >-
+    Cancel (delete) a timer or alarm by name. Use for "cancel my 8am
+    alarm" or "cancel the pasta timer". Pass `all: true` to clear
+    everything.
+  parameters:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Name (partial match) of the timer or alarm to cancel.
+      all:
+        type: boolean
+        description: If true, delete every timer and alarm.
+
+- name: snooze_timer_alarm
+  type: native
+  operation: alarm_clock_snooze
+  description: >-
+    Snooze the currently ringing timer or alarm by N minutes (default 5).
+    Use for "snooze" or "give me 5 more minutes".
+  parameters:
+    type: object
+    properties:
+      minutes:
+        type: integer
+        description: Minutes to snooze. Default 5.
+
+- name: stop_ringing
+  type: native
+  operation: alarm_clock_stop
+  description: >-
+    Stop the audio on the currently ringing timer or alarm WITHOUT
+    deleting it. Use for "stop", "turn that off", "I'm awake". Use
+    cancel_timer_alarm if the user wants to delete it entirely.
+  parameters:
+    type: object
+    properties: {}

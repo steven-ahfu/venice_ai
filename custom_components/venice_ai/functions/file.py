@@ -63,17 +63,27 @@ FILE_READ_SIZE_LIMIT = 1024 * 1024  # 1 MB
 
 
 def _resolve_path(hass: HomeAssistant, raw_path: str, allow_dirs: list[str] | None = None) -> Path:
-    """Resolve path relative to config dir workspace. Raises ValueError if outside allowed dirs."""
-    workspace = Path(hass.config.config_dir) / "venice_ai"
-    allowed = [workspace]
-    if allow_dirs:
-        for d in allow_dirs:
-            allowed.append(Path(d).expanduser())
+    """Resolve raw_path against the venice_ai workspace (or one of allow_dirs) and verify
+    the result is contained inside one of those roots.
 
-    resolved = (workspace / raw_path).resolve()
-    if not any(str(resolved).startswith(str(a.resolve())) for a in allowed):
-        raise ValueError(f"Path '{resolved}' is outside the allowed workspace")
-    return resolved
+    Resolution rules:
+      * If raw_path is absolute, it is resolved as-is and must land inside an allowed root.
+      * If raw_path is relative, it is joined against each allowed root in order; the first
+        join whose resolution stays inside that root wins.
+      * Containment is checked with Path.is_relative_to so siblings like
+        '/config/venice_ai_attack' are rejected (string-prefix would accept them).
+    """
+    allowed_roots = [(Path(hass.config.config_dir) / "venice_ai").resolve()]
+    if allow_dirs:
+        allowed_roots.extend(Path(d).expanduser().resolve() for d in allow_dirs)
+
+    raw = Path(raw_path)
+    candidates = [raw.resolve()] if raw.is_absolute() else [(root / raw).resolve() for root in allowed_roots]
+
+    for candidate in candidates:
+        if any(candidate == root or candidate.is_relative_to(root) for root in allowed_roots):
+            return candidate
+    raise ValueError(f"Path '{raw_path}' is outside the allowed workspace")
 
 
 class ReadFileFunction(Function):

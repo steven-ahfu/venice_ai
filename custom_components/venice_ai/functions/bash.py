@@ -3,15 +3,16 @@
 The `command` is rendered as a Jinja2 template with the LLM-supplied
 `arguments` as variables, then executed via `asyncio.create_subprocess_shell`.
 
-Guards:
-  * Denylist regex blocks `rm -rf`, `mkfs`, `dd`, `shutdown`, `reboot`,
-    `format`, `chmod 777`, and shell fork bombs.
+Guards (best-effort, NOT a sandbox):
+  * Denylist regex blocks obvious self-destructive commands (rm -r/-f
+    combinations, mkfs, dd if=, shutdown, reboot, format, world-writable
+    chmod, fork bombs).
   * 5 minute timeout; stdout/stderr capped at 10 000 chars each.
-  * If `restrict_to_workspace: true` (default) and `cwd` is set, `..` in the
-    rendered command is rejected to discourage path traversal.
 
-The denylist is intentionally narrow — this tool is still dangerous and
-should only be exposed to trusted users.
+The denylist is a tripwire against a hallucinating LLM, not a security
+boundary. Pipes, env wrappers, command substitution, or rephrasing will
+bypass it — anyone with bash-tool access can do anything the HA process
+user can do. Only expose this tool to a trusted setup.
 
 Returns `{exit_code, stdout, stderr}` on success, `{error: ...}` on failure.
 
@@ -35,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -47,15 +47,21 @@ _LOGGER = logging.getLogger(__name__)
 
 SHELL_TIMEOUT = 300
 SHELL_OUTPUT_LIMIT = 10000
+# Denylist is a best-effort tripwire for obvious self-foot-shooting (LLM
+# hallucinating `rm -rf /`). It is NOT a sandbox — pipes, env wrappers,
+# command substitution, or simply rephrasing trivially defeat it. Treat any
+# bash tool as full shell access to the HA host.
 SHELL_DENY_PATTERNS = [
-    r"\brm\s+-[rRf]",
+    r"\brm\s+(?:-[a-zA-Z]*[rRf][a-zA-Z]*\s+)+",  # rm -rf / -fr / -r -f / --recursive --force
+    r"\brm\s+--recursive\b",
+    r"\brm\s+--force\b.*\b--recursive\b",
     r"\bformat\b",
     r"\bdd\s+if=",
     r"\bshutdown\b",
     r"\breboot\b",
     r"\bmkfs\b",
-    r":\(\)\{.*\}",  # fork bomb
-    r"\bchmod\s+777\b",
+    r":\(\)\s*\{.*\|.*:",  # fork bomb (more accurate)
+    r"\bchmod\s+(?:-R\s+)?0?[67]?7[67]7\b",  # 777, 0777, world-writable
 ]
 
 
@@ -96,9 +102,12 @@ class BashFunction(Function):
         if cwd_tpl:
             cwd = Template(cwd_tpl, hass).async_render(arguments, parse_result=False)
 
-        restrict = function_config.get("restrict_to_workspace", True)
-        if restrict and cwd and ".." in command:
-            return {"error": "Path traversal detected in command"}
+        # NOTE: `restrict_to_workspace` is intentionally NOT enforced via a
+        # ".." substring check — that gave a false sense of safety without
+        # actually preventing escape (e.g. absolute paths, command
+        # substitution, env-var expansion, encoded paths all bypass it).
+        # The bash tool is full shell access; if you need a sandbox use the
+        # file_* tools instead.
 
         try:
             proc = await asyncio.create_subprocess_shell(

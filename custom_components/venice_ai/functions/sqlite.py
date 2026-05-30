@@ -34,6 +34,7 @@ Example `tools.yaml` — daily summary of door-sensor events from the recorder:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -42,6 +43,29 @@ from homeassistant.helpers.template import Template
 from .base import Function
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_sqlite_path(hass: HomeAssistant, db_url: str) -> Path:
+    """Parse a ``sqlite:///<path>`` URL and verify the path is allowed.
+
+    Only the sqlite scheme is accepted (so misconfigured Postgres/MariaDB
+    recorders fail fast with a clear error rather than silently opening a
+    bogus file). The path must live inside the HA config directory — that
+    is the only place a HA install legitimately keeps SQLite databases.
+    """
+    if not db_url.startswith("sqlite:///"):
+        raise ValueError(
+            f"sqlite tool only supports sqlite:/// URLs; got {db_url!r}. "
+            "Non-sqlite recorders (Postgres/MariaDB) are not queryable here."
+        )
+    raw = db_url[len("sqlite:///"):]
+    candidate = Path(raw).expanduser().resolve()
+    config_root = Path(hass.config.config_dir).resolve()
+    if not (candidate == config_root or candidate.is_relative_to(config_root)):
+        raise ValueError(
+            f"sqlite db_url path {candidate} is outside the HA config directory"
+        )
+    return candidate
 
 
 class SqliteFunction(Function):
@@ -80,9 +104,14 @@ class SqliteFunction(Function):
                 return {"error": "Could not determine recorder database URL"}
 
         try:
+            db_path = _resolve_sqlite_path(hass, db_url)
+        except ValueError as err:
+            return {"error": str(err)}
+
+        try:
             import sqlite3
             def _run_query() -> list[dict[str, Any]]:
-                conn = sqlite3.connect(f"file:{db_url.replace('sqlite:///', '')}?mode=ro", uri=True)
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 conn.row_factory = sqlite3.Row
                 try:
                     cursor = conn.execute(query)

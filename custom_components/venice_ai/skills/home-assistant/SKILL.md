@@ -72,6 +72,15 @@ Use these patterns only when a direct Home Assistant REST capability is availabl
 - Choose automation mode by behavior: `restart` for motion lights with a timeout, `queued` for ordered actions such as door-lock sequences, `parallel` for independent entity work, and `single` for one-shot notifications.
 - Before changing an entity identifier or replacing an existing helper, identify affected automations, scripts, and scenes; such changes can silently break routines.
 
+# Timers And Alarms
+
+Timers and alarms are provided by the HACS integration `nirnachmani/HA-Alarm-Clock` (domain `ha_alarm_clock`). If the user asks to set, list, cancel, or snooze a timer or alarm, use the Venice wrapper tools (`set_timer`, `set_alarm`, `list_timers_alarms`, `cancel_timer_alarm`, `snooze_timer_alarm`, `stop_ringing`) — those handle "in 5 minutes" / "at 7:30 AM" phrasing and dispatch to the right `ha_alarm_clock.*` service.
+
+- Multiple concurrent timers and alarms are supported — each is its own entity with a name.
+- Cancel and snooze accept a `name` (partial match) so users can say "cancel my pasta timer" naturally.
+- When a timer or alarm fires, it loops audio on the configured `media_player` until the user says stop. Use `stop_ringing` to stop the sound without deleting the timer.
+- If a service call returns "Service ha_alarm_clock.* not found", tell the user to install `nirnachmani/HA-Alarm-Clock` from HACS first.
+
 # Avoid Harmful Changes
 
 - Avoid deleting integrations, removing entities, restarting Home Assistant, or rewriting configuration unless the user explicitly requests it and the available tool supports safe execution.
