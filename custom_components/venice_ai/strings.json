@@ -21,7 +21,7 @@
       "step": {
         "init": {
           "title": "Venice AI Options",
-          "description": "Configure Venice AI settings. Only models with function calling support are shown.",
+          "description": "Configure Venice AI settings. Only models with function calling support are shown. Models that also support web search are marked with 🔍.",
           "data": {
             "chat_model": "AI Model",
             "prompt": "System Prompt",
@@ -30,7 +30,11 @@
             "top_p": "Top P (0-1)",
             "max_tokens": "Max Tokens",
             "strip_thinking_response": "Strip thinking response (for reasoning models)",
-            "disable_thinking": "Disable thinking (for reasoning models)"
+            "disable_thinking": "Disable thinking (for reasoning models)",
+            "enable_web_search": "Enable Web Search"
+          },
+          "data_description": {
+            "enable_web_search": "Allow the AI to search the web when answering questions. Only available on models marked 🔍 in the model list."
           }
         }
       }

@@ -25,6 +25,11 @@ RECOMMENDED_REASONING_EFFORT = "low"
 CONF_STRIP_THINKING_RESPONSE = "strip_thinking_response"
 CONF_DISABLE_THINKING = "disable_thinking"
 
+# Venice AI web search option. Only effective on models whose capabilities
+# advertise supportsWebSearch (marked with 🔍 in the model picker).
+CONF_ENABLE_WEB_SEARCH = "enable_web_search"
+RECOMMENDED_ENABLE_WEB_SEARCH = False
+
 # Venice AI TTS options
 CONF_TTS_MODEL = "tts_model"
 RECOMMENDED_TTS_MODEL = "tts-kokoro"

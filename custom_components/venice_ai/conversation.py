@@ -24,6 +24,7 @@ from .const import (
     CONF_TOP_P,
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
+    CONF_ENABLE_WEB_SEARCH,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -320,6 +321,12 @@ class VeniceAIConversationEntity(ConversationEntity):
             assistant_response_content = None # Final text response
             next_api_request_messages = messages # Start with full current history
 
+            # Build venice_parameters once; enable web search only when the user
+            # opted in. Venice ignores this for models without web search support.
+            venice_parameters: dict[str, Any] = {"include_venice_system_prompt": False}
+            if options.get(CONF_ENABLE_WEB_SEARCH, False):
+                 venice_parameters["enable_web_search"] = "on"
+
             for _iteration in range(MAX_TOOL_ITERATIONS):
                  api_request_payload = {
                       "model": _build_model_name(
@@ -330,7 +337,7 @@ class VeniceAIConversationEntity(ConversationEntity):
                       "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
                       "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                       "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                      "venice_parameters": {"include_venice_system_prompt": False},
+                      "venice_parameters": venice_parameters,
                       "stream": False,
                       **({"tools": tools} if tools else {}),
                  }

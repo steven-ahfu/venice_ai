@@ -39,6 +39,7 @@ from .const import (
     CONF_TOP_P,
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
+    CONF_ENABLE_WEB_SEARCH,
     CONF_TTS_MODEL,
     CONF_TTS_VOICE,
     CONF_TTS_RESPONSE_FORMAT,
@@ -48,6 +49,7 @@ from .const import (
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
     # RECOMMENDED_REASONING_EFFORT, # Not used
+    RECOMMENDED_ENABLE_WEB_SEARCH,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_TTS_MODEL,
@@ -117,6 +119,7 @@ class VeniceAIConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_MAX_TOKENS: RECOMMENDED_MAX_TOKENS,
                     CONF_STRIP_THINKING_RESPONSE: False,
                     CONF_DISABLE_THINKING: False,
+                    CONF_ENABLE_WEB_SEARCH: RECOMMENDED_ENABLE_WEB_SEARCH,
                 }
                 return self.async_create_entry(
                     title="Venice AI", data=user_input, options=initial_options
@@ -205,9 +208,13 @@ class VeniceAIOptionsFlow(OptionsFlow):
 
                         if supports_function_calling:
                             model_name = model_spec.get("name", model_id)
+                            # Only mark models that actually advertise web search
+                            # support with 🔍 so the indicator stays meaningful.
+                            supports_web_search = capabilities.get("supportsWebSearch", False)
+                            web_search_marker = "🔍 " if supports_web_search else ""
                             fetched_models.append(SelectOptionDict(
                                 value=model_id,
-                                label=f"{model_name} ({model_id})"
+                                label=f"{web_search_marker}{model_name} ({model_id})"
                             ))
 
                     # Sort models alphabetically by label
@@ -311,6 +318,12 @@ class VeniceAIOptionsFlow(OptionsFlow):
             vol.Optional(
                 CONF_DISABLE_THINKING,
                 default=self.config_entry.options.get(CONF_DISABLE_THINKING, False)
+            ): BooleanSelector(),
+            # --- Web Search ---
+            # Only effective on models marked 🔍 in the picker above.
+            vol.Optional(
+                CONF_ENABLE_WEB_SEARCH,
+                default=self.config_entry.options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH)
             ): BooleanSelector(),
             # --- TTS Model Selection ---
             vol.Optional(
