@@ -20,6 +20,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .client import AsyncVeniceAIClient
 from .const import (
+    CONF_TTS_MODEL,
+    CONF_TTS_RESPONSE_FORMAT,
+    CONF_TTS_SPEED,
+    CONF_TTS_VOICE,
     RECOMMENDED_TTS_MODEL,
     RECOMMENDED_TTS_RESPONSE_FORMAT,
     RECOMMENDED_TTS_SPEED,
@@ -89,13 +93,25 @@ class VeniceAITTS(TextToSpeechEntity):
 
     @property
     def default_options(self) -> dict[str, Any]:
-        """Return default options."""
+        """Return default options.
+
+        Defaults are sourced from the config entry options so the voice
+        (and other TTS settings) chosen in the integration's Options flow
+        are actually applied. Previously these were hardcoded to the
+        RECOMMENDED_* values, which meant a user's configured voice was
+        silently ignored and the Venice API fell back to its own server
+        default voice.
+        """
+        options = self._config_entry.options
+        response_format = options.get(
+            CONF_TTS_RESPONSE_FORMAT, RECOMMENDED_TTS_RESPONSE_FORMAT
+        )
         return {
-            ATTR_AUDIO_OUTPUT: RECOMMENDED_TTS_RESPONSE_FORMAT,
-            "tts_voice": RECOMMENDED_TTS_VOICE,
-            "tts_model": RECOMMENDED_TTS_MODEL,
-            "tts_response_format": RECOMMENDED_TTS_RESPONSE_FORMAT,
-            "tts_speed": RECOMMENDED_TTS_SPEED,
+            ATTR_AUDIO_OUTPUT: response_format,
+            "tts_voice": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE),
+            "tts_model": options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL),
+            "tts_response_format": response_format,
+            "tts_speed": options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED),
         }
 
     async def async_get_tts_audio(
@@ -105,13 +121,32 @@ class VeniceAITTS(TextToSpeechEntity):
         if options is None:
             options = {}
 
-        # Support both Home Assistant standard keys and existing Venice keys.
-        voice = options.get(ATTR_VOICE) or options.get("tts_voice", RECOMMENDED_TTS_VOICE)
-        model = options.get("tts_model", RECOMMENDED_TTS_MODEL)
-        response_format = options.get(ATTR_AUDIO_OUTPUT) or options.get(
-            "tts_response_format", RECOMMENDED_TTS_RESPONSE_FORMAT
+        # Fall back to the voice/model/etc. configured in the integration's
+        # Options flow (stored on the config entry) before the global
+        # RECOMMENDED_* defaults. Priority order for the voice:
+        #   1. ATTR_VOICE  -> explicit per-request voice (e.g. Assist pipeline)
+        #   2. "tts_voice" -> Venice-specific per-request override
+        #   3. config entry option -> the user's configured default voice
+        #   4. RECOMMENDED_TTS_VOICE -> hardcoded fallback
+        entry_options = self._config_entry.options
+        voice = (
+            options.get(ATTR_VOICE)
+            or options.get("tts_voice")
+            or entry_options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)
         )
-        speed = options.get("tts_speed", RECOMMENDED_TTS_SPEED)
+        model = options.get("tts_model") or entry_options.get(
+            CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL
+        )
+        response_format = (
+            options.get(ATTR_AUDIO_OUTPUT)
+            or options.get("tts_response_format")
+            or entry_options.get(
+                CONF_TTS_RESPONSE_FORMAT, RECOMMENDED_TTS_RESPONSE_FORMAT
+            )
+        )
+        speed = options.get("tts_speed") or entry_options.get(
+            CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED
+        )
 
         _LOGGER.debug("Generating TTS for message: %s", message)
         _LOGGER.debug(
@@ -169,8 +204,22 @@ class VeniceAITTS(TextToSpeechEntity):
         return (response_format, audio_data)
 
     def async_get_supported_voices(self, language: str) -> list[Voice] | None:
-        """Return available Venice voices for Home Assistant voice selection."""
-        return [Voice(voice_id, voice_id) for voice_id in VENICE_TTS_VOICES]
+        """Return available Venice voices for Home Assistant voice selection.
+
+        Voices are returned in a stable, alphabetically sorted order with the
+        user's configured voice placed first. The Assist pipeline voice picker
+        uses the first entry as its default, so this ensures the configured
+        voice is the default rather than whichever voice happened to be first
+        in the raw list.
+        """
+        configured_voice = self._config_entry.options.get(
+            CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE
+        )
+        ordered_voices = sorted(VENICE_TTS_VOICES)
+        if configured_voice in ordered_voices:
+            ordered_voices.remove(configured_voice)
+            ordered_voices.insert(0, configured_voice)
+        return [Voice(voice_id, voice_id) for voice_id in ordered_voices]
 
     async def async_stream_tts_audio(
         self, request: TTSAudioRequest
