@@ -6,6 +6,13 @@
           "data": {
             "api_key": "Venice AI API Key"
           }
+        },
+        "reauth_confirm": {
+          "title": "Re-authenticate Venice AI",
+          "description": "The Venice AI API key for {name} is no longer valid. Please enter a new API key to reconnect.",
+          "data": {
+            "api_key": "Venice AI API Key"
+          }
         }
       },
       "error": {
