@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import struct
 import time
@@ -18,11 +17,13 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_STT_ENABLED,
     CONF_STT_MODEL,
     CONF_STT_RESPONSE_FORMAT,
     CONF_STT_TIMESTAMPS,
     DOMAIN,
     MAX_STT_BUFFER_SIZE,
+    RECOMMENDED_STT_ENABLED,
     RECOMMENDED_STT_MODEL,
     RECOMMENDED_STT_RESPONSE_FORMAT,
     RECOMMENDED_STT_TIMESTAMPS,
@@ -30,16 +31,6 @@ from .const import (
 from .client import AsyncVeniceAIClient, VeniceAIError
 
 _LOGGER = logging.getLogger(__name__)
-
-# Fix 2: Moved out of async_process_audio_stream to avoid re-creating on every call.
-# Each tuple is (metadata_attr_name, property_name, human_label).
-_STT_VALIDATION_ATTRS = [
-    ("format", "supported_formats", "audio format"),
-    ("codec", "supported_codecs", "audio codec"),
-    ("bit_rate", "supported_bit_rates", "bit rate"),
-    ("sample_rate", "supported_sample_rates", "sample rate"),
-    ("channel", "supported_channels", "channel count"),
-]
 
 
 def _pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000, num_channels: int = 1, bits_per_sample: int = 16) -> bytes:
@@ -76,7 +67,17 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Venice AI STT entity."""
+    """Set up Venice AI STT entity.
+
+    Honors the per-entry ``CONF_STT_ENABLED`` toggle: when the user has
+    disabled Venice STT in the options flow, no entity is registered so the
+    voice-pipeline UI shows only the user's preferred STT engine.  The
+    integration's update listener already reloads the entry on options
+    changes, so toggling this option takes effect immediately.
+    """
+    if not entry.options.get(CONF_STT_ENABLED, RECOMMENDED_STT_ENABLED):
+        _LOGGER.debug("Venice AI STT disabled by option; skipping entity setup")
+        return
     async_add_entities([VeniceAISTT(entry)])
 
 
@@ -142,9 +143,17 @@ class VeniceAISTT(SpeechToTextEntity):
         Venice AI does not currently support chunked streaming uploads
         for transcriptions.
         """
+        _stt_start = time.monotonic()
+
         # Validate metadata against declared supported formats
-        for attr, prop, label in _STT_VALIDATION_ATTRS:
-            supported = getattr(self, prop)
+        _VALIDATION_ATTRS = [
+            ("format", self.supported_formats, "audio format"),
+            ("codec", self.supported_codecs, "audio codec"),
+            ("bit_rate", self.supported_bit_rates, "bit rate"),
+            ("sample_rate", self.supported_sample_rates, "sample rate"),
+            ("channel", self.supported_channels, "channel count"),
+        ]
+        for attr, supported, label in _VALIDATION_ATTRS:
             if getattr(metadata, attr) not in supported:
                 _LOGGER.error(
                     "Unsupported %s: %s. Only %s is supported.",
@@ -153,12 +162,6 @@ class VeniceAISTT(SpeechToTextEntity):
                 return stt.SpeechResult("", stt.SpeechResultState.ERROR)
 
         try:
-            _stt_start = time.monotonic()
-            _LOGGER.debug(
-                "[PERF-STT] [+0.000s] Audio stream received at %s — buffering audio",
-                datetime.datetime.now().isoformat(timespec="milliseconds"),
-            )
-
             # Read all data from the stream using bytearray for efficiency
             audio_data = bytearray()
             async for chunk in stream:
@@ -169,13 +172,6 @@ class VeniceAISTT(SpeechToTextEntity):
                         MAX_STT_BUFFER_SIZE,
                     )
                     return stt.SpeechResult("", stt.SpeechResultState.ERROR)
-
-            _buffered_t = time.monotonic() - _stt_start
-            _LOGGER.debug(
-                "[PERF-STT] [+%.3fs] Audio buffering complete — %d bytes received",
-                _buffered_t,
-                len(audio_data),
-            )
 
             # Handle empty audio streams gracefully
             if len(audio_data) == 0:
@@ -192,8 +188,7 @@ class VeniceAISTT(SpeechToTextEntity):
             )
 
             _LOGGER.debug(
-                "[PERF-STT] [+%.3fs] Processing audio (%d bytes) with model=%s, format=%s, timestamps=%s",
-                time.monotonic() - _stt_start,
+                "Processing audio stream (%d bytes) with model=%s, format=%s, timestamps=%s",
                 len(audio_data),
                 model,
                 response_format,
@@ -202,20 +197,10 @@ class VeniceAISTT(SpeechToTextEntity):
 
             # Convert PCM data to WAV format since Venice AI expects proper WAV files
             wav_data = _pcm_to_wav(bytes(audio_data), sample_rate=16000, num_channels=1, bits_per_sample=16)
-            _LOGGER.debug(
-                "[PERF-STT] [+%.3fs] PCM→WAV conversion done (%d → %d bytes)",
-                time.monotonic() - _stt_start,
-                len(audio_data),
-                len(wav_data),
-            )
+            _LOGGER.debug("Converted PCM to WAV (%d bytes -> %d bytes)", len(audio_data), len(wav_data))
 
             client: AsyncVeniceAIClient = self.entry.runtime_data.client
 
-            _LOGGER.debug(
-                "[PERF-STT] [+%.3fs] Sending to Venice AI transcription API (model=%s)",
-                time.monotonic() - _stt_start,
-                model,
-            )
             _api_start = time.monotonic()
 
             result = await client.transcriptions.create(

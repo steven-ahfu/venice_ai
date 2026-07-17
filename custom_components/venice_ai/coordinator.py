@@ -26,7 +26,6 @@ class VeniceAICoordinatorData(TypedDict):
 
     text_models: list[dict[str, Any]]
     audio_models: list[dict[str, Any]]
-    voices: list[str]
 
 
 class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorData]):
@@ -47,7 +46,7 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         )
 
     async def _async_update_data(self) -> VeniceAICoordinatorData:
-        """Fetch models and voices from Venice AI.
+        """Fetch models from Venice AI.
 
         Each category is fetched independently so a failure in one
         does not block the others.
@@ -55,7 +54,6 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         data: VeniceAICoordinatorData = {
             "text_models": [],
             "audio_models": [],
-            "voices": [],
         }
 
         try:
@@ -81,32 +79,8 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         try:
             tts_models = await self.client.models.list(model_type="tts")
             if isinstance(tts_models, list):
-                for m in tts_models:
-                    m["model_type"] = "tts"
                 data["audio_models"].extend(tts_models)
                 _LOGGER.debug("Coordinator fetched %d TTS models", len(tts_models))
-                # Extract voices from TTS model metadata.
-                # Venice AI returns voices under model_spec.voices (current API shape).
-                # Older/fallback responses may use the legacy voice_models field.
-                for model in tts_models:
-                    voices_found: list[str] = []
-
-                    # Primary source: model_spec.voices
-                    raw_spec = model.get("model_spec")
-                    if isinstance(raw_spec, dict):
-                        spec_voices = raw_spec.get("voices")
-                        if isinstance(spec_voices, list):
-                            voices_found = [v for v in spec_voices if isinstance(v, str) and v]
-
-                    # Fallback: legacy voice_models field
-                    if not voices_found:
-                        voice_models = model.get("voice_models", [])
-                        if isinstance(voice_models, list):
-                            voices_found = [v for v in voice_models if isinstance(v, str) and v]
-
-                    for vid in voices_found:
-                        if vid not in data["voices"]:
-                            data["voices"].append(vid)
         except AuthenticationError as err:
             _LOGGER.error("Authentication error fetching TTS models: %s", err)
             raise UpdateFailed(f"Authentication failed: {err}") from err
@@ -125,8 +99,6 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
         try:
             asr_models = await self.client.models.list(model_type="asr")
             if isinstance(asr_models, list):
-                for m in asr_models:
-                    m["model_type"] = "asr"
                 data["audio_models"].extend(asr_models)
                 _LOGGER.debug("Coordinator fetched %d ASR models", len(asr_models))
         except AuthenticationError as err:
@@ -143,14 +115,5 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
             _LOGGER.warning("Venice AI error fetching ASR models: %s", err)
         except Exception:
             _LOGGER.exception("Unexpected error fetching ASR models")
-
-        # MED-1: If every fetch failed and we have no data at all, surface the
-        # failure to the coordinator so HA can apply back-off, show the entity
-        # as unavailable, and fire repair issues.  Partial failures (e.g. only
-        # ASR models missing) are tolerated so other platforms keep working.
-        if not data["text_models"] and not data["audio_models"] and not data["voices"]:
-            raise UpdateFailed(
-                "All Venice AI data fetches failed; coordinator has no data to return."
-            )
 
         return data

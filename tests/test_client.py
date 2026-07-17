@@ -1,189 +1,149 @@
-"""Unit tests for ``client.py`` pure logic (TEST-1).
-
-Covers the telemetry counters backing the diagnostic sensors (LOW-4) and the
-centralised HTTP error categorization that gives every API method consistent,
-typed exceptions.
-"""
-
-from __future__ import annotations
-
+"""Tests for client.py — HTTP layer, retry logic, typed errors."""
+import asyncio
+import json
+import sys
+import unittest.mock
 import pytest
+import httpx
 
-from .conftest import load_component_module
+sys.path.insert(0, ".")
 
-client = load_component_module("client")
-
-
-class TestVeniceAIMetrics:
-    """Tests for the :class:`VeniceAIMetrics` telemetry dataclass."""
-
-    def test_initial_state_is_zeroed(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        assert metrics.request_count == 0
-        assert metrics.error_count == 0
-        assert metrics.prompt_tokens == 0
-        assert metrics.completion_tokens == 0
-        assert metrics.total_tokens == 0
-        assert metrics.last_error is None
-
-    def test_record_request_increments(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        metrics.record_request()
-        metrics.record_request()
-        assert metrics.request_count == 2
-
-    def test_record_error_tracks_count_and_message(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        metrics.record_error(ValueError("boom"))
-        assert metrics.error_count == 1
-        assert metrics.last_error == "ValueError: boom"
-
-    def test_record_usage_accumulates(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        metrics.record_usage(
-            {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-        )
-        metrics.record_usage(
-            {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
-        )
-        assert metrics.prompt_tokens == 13
-        assert metrics.completion_tokens == 7
-        assert metrics.total_tokens == 20
-
-    def test_record_usage_ignores_non_dict(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        metrics.record_usage(None)
-        metrics.record_usage("not-a-dict")  # type: ignore[arg-type]
-        assert metrics.total_tokens == 0
-
-    def test_record_usage_tolerates_missing_and_none_fields(self) -> None:
-        metrics = client.VeniceAIMetrics()
-        metrics.record_usage({"prompt_tokens": None})
-        assert metrics.prompt_tokens == 0
-        assert metrics.total_tokens == 0
+from custom_components.venice_ai.client import (
+    AsyncVeniceAIClient,
+    AuthenticationError,
+    RateLimitError,
+    ServiceUnavailableError,
+    NetworkError,
+    VeniceAIError,
+    _categorize_http_error,
+)
 
 
-class TestErrorCategorization:
-    """Tests for ``_categorize_http_error`` status-code mapping."""
+# ── _categorize_http_error ────────────────────────────────────────────────────
 
-    def test_401_is_authentication_error(self) -> None:
-        err = client._categorize_http_error(401, "nope", "fetching models")
-        assert isinstance(err, client.AuthenticationError)
+def test_categorize_401_returns_auth_error():
+    err = _categorize_http_error(401, "Unauthorized")
+    assert isinstance(err, AuthenticationError)
 
-    def test_429_is_rate_limit_error(self) -> None:
-        err = client._categorize_http_error(429, "slow down")
-        assert isinstance(err, client.RateLimitError)
+def test_categorize_429_returns_rate_limit_error():
+    err = _categorize_http_error(429, "Too many requests")
+    assert isinstance(err, RateLimitError)
 
-    @pytest.mark.parametrize("status", [500, 502, 503, 504])
-    def test_5xx_is_service_unavailable(self, status: int) -> None:
-        err = client._categorize_http_error(status, "down")
-        assert isinstance(err, client.ServiceUnavailableError)
+def test_categorize_500_returns_service_unavailable():
+    err = _categorize_http_error(500, "Internal Server Error")
+    assert isinstance(err, ServiceUnavailableError)
 
-    def test_generic_4xx_is_base_error(self) -> None:
-        err = client._categorize_http_error(418, "teapot")
-        assert isinstance(err, client.VeniceAIError)
+def test_categorize_503_returns_service_unavailable():
+    err = _categorize_http_error(503, "Service Unavailable")
+    assert isinstance(err, ServiceUnavailableError)
 
-    def test_context_included_in_message(self) -> None:
-        err = client._categorize_http_error(429, "limit", "during chat")
-        assert "during chat" in str(err)
+def test_categorize_400_returns_base_error():
+    err = _categorize_http_error(400, "Bad Request")
+    assert type(err) is VeniceAIError
+    assert not isinstance(err, (AuthenticationError, RateLimitError, ServiceUnavailableError))
+
+def test_categorize_includes_context():
+    err = _categorize_http_error(429, "Too many requests", context="fetching models")
+    assert "fetching models" in str(err)
+
+def test_categorize_401_ignores_context_in_message():
+    # AuthenticationError message is simple, not exposing raw detail
+    err = _categorize_http_error(401, "raw error body")
+    assert "raw error body" not in str(err)
 
 
-class TestSanitizeHeaderValue:
-    """Tests for ``_sanitize_header_value`` (SEC-1).
+# ── Client lifecycle ──────────────────────────────────────────────────────────
 
-    Regression guard: commit 64b115c implemented this helper with a
-    ``.strip()`` + ``ord(ch) >= 0x20`` filter, which silently mutated
-    API keys that had surrounding whitespace into byte-different strings.
-    Those mutated keys authenticated against Venice as "invalid" and the
-    integration began logging HTTP 401 on every request even though the
-    user's stored key was valid. These tests pin the contract: only
-    ``\\r`` and ``\\n`` are removed, everything else passes through.
-    """
+@pytest.mark.asyncio
+async def test_client_close_is_idempotent():
+    """close() called twice must not raise."""
+    client = AsyncVeniceAIClient(api_key="test-key")
+    await client.close()
+    await client.close()  # second call must be a no-op
 
-    def test_none_returns_empty_string(self) -> None:
-        assert client._sanitize_header_value(None) == ""
+@pytest.mark.asyncio
+async def test_client_context_manager_closes():
+    """async with must close the client on exit."""
+    async with AsyncVeniceAIClient(api_key="test-key") as client:
+        assert not client._closed
+    assert client._closed
 
-    def test_empty_string_returns_empty_string(self) -> None:
-        assert client._sanitize_header_value("") == ""
+@pytest.mark.asyncio
+async def test_client_does_not_close_injected_http_client():
+    """When an external http_client is injected, close() must not close it."""
+    external = httpx.AsyncClient()
+    client = AsyncVeniceAIClient(api_key="test-key", http_client=external)
+    await client.close()
+    assert not external.is_closed  # external client still open
+    await external.aclose()
 
-    def test_plain_ascii_key_is_preserved(self) -> None:
-        key = "sk-AbCdEfGh1234567890ZyXwVuTsRqPo"
-        assert client._sanitize_header_value(key) == key
+# ── Retry logic ───────────────────────────────────────────────────────────────
 
-    def test_leading_and_trailing_whitespace_preserved(self) -> None:
-        # Regression: the old .strip() implementation removed these and
-        # produced a byte-different key, which Venice rejected with 401.
-        # We must keep the key byte-for-byte intact (httpx handles any
-        # well-defined trailing-whitespace trimming on the wire itself).
-        key = "  sk-AbCdEfGh1234567890  "
-        assert client._sanitize_header_value(key) == "  sk-AbCdEfGh1234567890  "
+@pytest.mark.asyncio
+async def test_retry_on_429_then_success(respx_mock=None):
+    """_async_request_with_retry retries on 429 and returns the eventual success."""
+    call_count = 0
 
-    def test_internal_tab_preserved(self) -> None:
-        # Tabs inside a credential are unusual but the SEC-1 contract is
-        # "remove only CR/LF" — we must not silently edit other bytes.
-        key = "sk-\tabc"
-        assert client._sanitize_header_value(key) == "sk-\tabc"
+    class _FakeResponse:
+        def __init__(self, status_code, body="{}"):
+            self.status_code = status_code
+            self._body = body
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("err", request=None, response=self)
+        def json(self):
+            return json.loads(self._body)
+        @property
+        def text(self):
+            return self._body
+        async def aread(self):
+            pass
 
-    def test_trailing_newline_stripped(self) -> None:
-        # The actual header-injection vector: a stray \n at the end of a
-        # pasted API key. This MUST be removed.
-        key = "sk-abc123\n"
-        assert client._sanitize_header_value(key) == "sk-abc123"
+    async def fake_request(method, url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            return _FakeResponse(429)
+        return _FakeResponse(200, '{"ok": true}')
 
-    def test_carriage_return_stripped(self) -> None:
-        key = "sk-abc123\r"
-        assert client._sanitize_header_value(key) == "sk-abc123"
+    client = AsyncVeniceAIClient(api_key="k")
+    client._http_client.request = fake_request  # type: ignore[method-assign]
 
-    def test_crlf_inside_key_stripped(self) -> None:
-        # The classic header-injection payload: CRLF followed by a fake
-        # header. Only the CR/LF bytes are removed; the rest is passed
-        # through (and httpx will reject it on the wire if it is still
-        # malformed, which is the correct defense-in-depth posture).
-        key = "sk-abc\r\nX-Evil-Header: injected"
-        out = client._sanitize_header_value(key)
-        assert "\r" not in out
-        assert "\n" not in out
-        assert out == "sk-abcX-Evil-Header: injected"
+    async def _no_sleep(_): pass
 
-    def test_nbsp_preserved(self) -> None:
-        # Non-ASCII whitespace (\xa0) is NOT Python-defined whitespace for
-        # the purposes of this function. The old implementation's .strip()
-        # would remove it on some Python builds and turn a valid key into
-        # a 401-rejected one. Pin: leave it alone.
-        key = "\xa0sk-abc123\xa0"
-        assert client._sanitize_header_value(key) == "\xa0sk-abc123\xa0"
+    with unittest.mock.patch("custom_components.venice_ai.client.asyncio.sleep", _no_sleep):
+        resp = await client._async_request_with_retry("GET", "/test")
 
-    def test_non_ascii_key_bytes_preserved(self) -> None:
-        # If Venice ever issues keys with non-ASCII characters, we must
-        # not filter them out. The old ord >= 0x20 check happened to allow
-        # these, but combined with .strip() the function still broke
-        # surrounding whitespace. Pin the full contract here.
-        key = "sk-café-ñ-ü"
-        assert client._sanitize_header_value(key) == "sk-café-ñ-ü"
+    assert resp.json() == {"ok": True}
+    assert call_count == 3
+    await client.close()
 
-    def test_stored_api_key_is_unmodified(self) -> None:
-        """The client stores the raw key; only the header value is scrubbed.
 
-        Regression: commit 64b115c stored ``safe_api_key`` on
-        ``self._api_key``, so any code path that re-used the in-memory
-        key (diagnostics, re-auth round-trip, the Speech/Transcriptions
-        per-request headers) would re-mutate an already-mutated value.
-        """
-        import httpx
-        raw_key = "  sk-AbCdEfGh1234567890  \n"
-        c = client.AsyncVeniceAIClient(api_key=raw_key, http_client=httpx.AsyncClient())
-        try:
-            # In-memory copy is byte-for-byte the user-provided value.
-            assert c._api_key == raw_key
-            # Header value has only CR/LF removed — surrounding whitespace
-            # is preserved so Venice sees the same key the user entered.
-            assert c._headers["Authorization"] == f"Bearer {raw_key.replace(chr(10), '')}"
-            assert "\n" not in c._headers["Authorization"]
-        finally:
-            import asyncio
-            asyncio.get_event_loop_policy()
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(c.close())
-            finally:
-                loop.close()
+# ── Models TTL cache ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_models_cache_returns_stale_within_ttl():
+    """list() returns cached result without hitting the API again within TTL."""
+    import time
+
+    call_count = 0
+
+    class _FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"data": [{"id": "model-a"}]}
+
+    async def fake_request(method, url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return _FakeResponse()
+
+    client = AsyncVeniceAIClient(api_key="k")
+    client._http_client.request = fake_request  # type: ignore[method-assign]
+
+    models1 = await client.models.list("text")
+    models2 = await client.models.list("text")
+
+    assert models1 == models2 == [{"id": "model-a"}]
+    assert call_count == 1  # second call was served from cache
+    await client.close()

@@ -1,22 +1,10 @@
-"""Shared pytest fixtures and fakes for the Venice AI test suite.
-
-These fakes let the service layer (``venice_api``) be tested in isolation
-without a live network or a running Home Assistant instance, satisfying the
-TEST-2 goal of integration-style tests with a mocked Venice AI client.
-"""
-
-from __future__ import annotations
-
+"""Shared test fixtures: stub all HA modules before any package import."""
 import importlib.util
 import sys
 import types
-from contextlib import asynccontextmanager
+import unittest.mock
 from pathlib import Path
-from typing import Any
 
-import pytest
-
-# Make ``custom_components`` importable when running ``pytest`` from the repo root.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -28,18 +16,9 @@ _PKG_NAME = "venice_ai_under_test"
 def load_component_module(name: str) -> types.ModuleType:
     """Load a single integration module without triggering the package __init__.
 
-    The integration's ``__init__.py`` imports Home Assistant at import time,
-    which is not available in a plain unit-test environment. To test the
-    pure-logic modules (``client``, ``venice_api``) in isolation we load them
-    under a lightweight synthetic package so their relative imports
-    (e.g. ``from .client import ...``) resolve correctly.
-
-    Args:
-        name: The module name within ``custom_components/venice_ai`` to load,
-            e.g. ``"client"`` or ``"venice_api"``.
-
-    Returns:
-        The imported module object.
+    Loads pure-logic modules (``client``, ``venice_api``) under a lightweight
+    synthetic package so their relative imports resolve without importing the
+    integration's ``__init__.py`` (which needs a real Home Assistant).
     """
     if _PKG_NAME not in sys.modules:
         pkg = types.ModuleType(_PKG_NAME)
@@ -60,18 +39,236 @@ def load_component_module(name: str) -> types.ModuleType:
     return module
 
 
+def _stub(name: str, **attrs):
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    sys.modules[name] = mod
+    return mod
+
+
+# Ensure parent packages exist first
+for pkg in ["homeassistant", "homeassistant.components", "homeassistant.helpers", "homeassistant.util"]:
+    if pkg not in sys.modules:
+        sys.modules[pkg] = types.ModuleType(pkg)
+
+# homeassistant.const — needs CONF_API_KEY and Platform
+class _Platform:
+    CONVERSATION = "conversation"
+    TTS = "tts"
+    STT = "stt"
+    AI_TASK = "ai_task"
+
+_const = _stub(
+    "homeassistant.const",
+    CONF_API_KEY="api_key",
+    CONF_LLM_HASS_API="llm_hass_api",
+    Platform=_Platform,
+)
+
+# homeassistant.core
+class _HA:
+    pass
+
+_stub(
+    "homeassistant.core",
+    HomeAssistant=_HA,
+    ServiceCall=object,
+    ServiceResponse=object,
+    SupportsResponse=unittest.mock.MagicMock(),
+    callback=lambda f: f,
+)
+
+# homeassistant.config_entries
+class _ConfigEntry:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+class _ConfigFlow:
+    def __init_subclass__(cls, **kwargs):
+        # HA's real ConfigFlow accepts `domain=...` via PEP 487; absorb it.
+        super().__init_subclass__()
+class _OptionsFlow: pass
+
+_stub(
+    "homeassistant.config_entries",
+    ConfigEntry=_ConfigEntry,
+    ConfigFlow=_ConfigFlow,
+    OptionsFlow=_OptionsFlow,
+    ConfigFlowResult=dict,
+)
+
+# homeassistant.exceptions
+class _HAError(Exception): pass
+class _TemplateError(Exception): pass
+class _ConfigEntryAuthFailed(Exception): pass
+class _ConfigEntryNotReady(Exception): pass
+class _ServiceValidationError(Exception): pass
+
+_stub(
+    "homeassistant.exceptions",
+    HomeAssistantError=_HAError,
+    TemplateError=_TemplateError,
+    ConfigEntryAuthFailed=_ConfigEntryAuthFailed,
+    ConfigEntryNotReady=_ConfigEntryNotReady,
+    ServiceValidationError=_ServiceValidationError,
+)
+
+# homeassistant.helpers.config_validation
+_stub("homeassistant.helpers.config_validation", string=str, config_entry_only_config_schema=lambda d: None)
+
+# homeassistant.helpers.selector
+_sel = _stub("homeassistant.helpers.selector")
+for name in [
+    "BooleanSelector", "NumberSelector", "NumberSelectorConfig", "NumberSelectorMode",
+    "SelectOptionDict", "SelectSelector", "SelectSelectorConfig",
+    "SelectSelectorMode", "TemplateSelector", "ConfigEntrySelector", "Selector",
+]:
+    setattr(_sel, name, unittest.mock.MagicMock())
+
+# homeassistant.helpers.llm
+_llm = _stub("homeassistant.helpers.llm")
+for name in ["Tool", "LLMContext", "ToolInput", "async_get_api", "async_get_apis"]:
+    setattr(_llm, name, unittest.mock.MagicMock())
+
+# homeassistant.helpers.device_registry
+_dr = _stub("homeassistant.helpers.device_registry")
+for name in ["DeviceInfo", "DeviceEntryType"]:
+    setattr(_dr, name, unittest.mock.MagicMock())
+
+# homeassistant.helpers.entity_platform
+_stub("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
+
+# homeassistant.helpers.template
+_stub("homeassistant.helpers.template", Template=unittest.mock.MagicMock())
+
+# homeassistant.helpers.httpx_client
+_stub("homeassistant.helpers.httpx_client", get_async_client=unittest.mock.MagicMock())
+
+# homeassistant.helpers.issue_registry
+_ir = _stub("homeassistant.helpers.issue_registry", IssueSeverity=unittest.mock.MagicMock())
+_ir.async_create_issue = unittest.mock.MagicMock()
+_ir.async_delete_issue = unittest.mock.MagicMock()
+_ir.async_get = unittest.mock.MagicMock()
+
+# homeassistant.helpers.intent
+_intent = _stub("homeassistant.helpers.intent")
+for name in ["IntentResponse", "IntentResponseErrorCode"]:
+    setattr(_intent, name, unittest.mock.MagicMock())
+
+# homeassistant.helpers.entity_registry
+_er = _stub("homeassistant.helpers.entity_registry")
+for name in ["RegistryEntry", "EntityRegistry", "async_get", "async_entries_for_config_entry"]:
+    setattr(_er, name, unittest.mock.MagicMock())
+
+# homeassistant.helpers (parent — needs sub-module attrs for `from homeassistant.helpers import x`)
+_stub("homeassistant.helpers",
+      config_validation=sys.modules["homeassistant.helpers.config_validation"],
+      llm=_llm,
+      selector=_sel,
+      issue_registry=_ir,
+      intent=_intent,
+      device_registry=_dr,
+      entity_registry=_er,
+)
+
+# homeassistant.helpers.typing
+_stub("homeassistant.helpers.typing", ConfigType=dict)
+
+# homeassistant.helpers.update_coordinator
+class _DataUpdateCoordinator:
+    def __init__(self, hass, logger, name, update_interval):
+        self.hass = hass
+        self.last_exception = None
+        self.last_update_success = True
+        self.data = None
+        self.update_interval = update_interval
+    async def async_config_entry_first_refresh(self): pass
+    def async_add_listener(self, cb): return lambda: None
+    def __class_getitem__(cls, _): return cls
+
+_stub(
+    "homeassistant.helpers.update_coordinator",
+    DataUpdateCoordinator=_DataUpdateCoordinator,
+    UpdateFailed=Exception,
+)
+
+# homeassistant.components.conversation
+_conv = _stub("homeassistant.components.conversation")
+for name in [
+    "HOME_ASSISTANT_AGENT", "ConversationEntity", "ConversationEntityFeature",
+    "ConversationInput", "ConversationResult", "ChatLog", "UserContent",
+    "AssistantContent", "SystemContent", "ToolResultContent", "ConverseError",
+]:
+    setattr(_conv, name, unittest.mock.MagicMock())
+
+# homeassistant.components.stt
+_stt = _stub("homeassistant.components.stt")
+for name in [
+    "SpeechResult", "SpeechResultState", "SpeechToTextEntity",
+    "AudioFormats", "AudioCodecs", "AudioBitRates", "AudioSampleRates",
+    "AudioChannels", "SpeechMetadata",
+]:
+    setattr(_stt, name, unittest.mock.MagicMock())
+
+# homeassistant.components.tts
+_tts = _stub("homeassistant.components.tts")
+for name in [
+    "ATTR_AUDIO_OUTPUT", "ATTR_VOICE", "TTSAudioRequest", "TTSAudioResponse",
+    "TextToSpeechEntity", "TtsAudioType", "Voice",
+]:
+    setattr(_tts, name, unittest.mock.MagicMock())
+
+# homeassistant.components.ai_task
+_ai_task = _stub("homeassistant.components.ai_task")
+for name in ["AITaskEntity", "AITaskEntityFeature", "GenDataTask", "GenDataTaskResult"]:
+    setattr(_ai_task, name, unittest.mock.MagicMock())
+
+# homeassistant.components.diagnostics
+_stub("homeassistant.components.diagnostics", async_redact_data=lambda d, _: d)
+
+# homeassistant.util.ulid
+_stub("homeassistant.util.ulid", ulid_now=lambda: "test-ulid-000")
+
+# homeassistant.util (parent)
+_util = sys.modules["homeassistant.util"]
+setattr(_util, "ulid", sys.modules["homeassistant.util.ulid"])
+
+# homeassistant.components (parent needs sub-attrs)
+_comps = sys.modules["homeassistant.components"]
+for attr in ["conversation", "stt", "tts", "ai_task", "diagnostics"]:
+    setattr(_comps, attr, sys.modules[f"homeassistant.components.{attr}"])
+
+# homeassistant.__version__
+_ha_root = sys.modules["homeassistant"]
+setattr(_ha_root, "__version__", "2024.1.0")
+_stub("homeassistant.const", **{
+    **{k: getattr(sys.modules["homeassistant.const"], k)
+       for k in dir(sys.modules["homeassistant.const"])},
+    "__version__": "2024.1.0",
+})
+
+
+# ── Fakes and fixtures for the venice_api service-layer tests ─────────────────
+
+from contextlib import asynccontextmanager  # noqa: E402
+from typing import Any  # noqa: E402
+
+import pytest  # noqa: E402
+
 
 class FakeChunk:
     """Minimal stand-in for ``ChatCompletionChunk`` used by the service layer."""
 
-    def __init__(self, choices: list[dict[str, Any]]) -> None:
+    def __init__(self, choices: list, usage: dict | None = None) -> None:
         self.choices = choices
+        self.usage = usage
 
 
 class FakeStream:
     """Async-iterable stream of :class:`FakeChunk` objects."""
 
-    def __init__(self, chunks: list[FakeChunk]) -> None:
+    def __init__(self, chunks: list) -> None:
         self._chunks = chunks
 
     def __aiter__(self) -> "FakeStream":
@@ -91,15 +288,15 @@ class FakeChatCompletions:
     def __init__(
         self,
         *,
-        chunks: list[FakeChunk] | None = None,
-        non_streaming_response: dict[str, Any] | None = None,
+        chunks: list | None = None,
+        non_streaming_response: dict | None = None,
     ) -> None:
         self._chunks = chunks or []
         self._non_streaming_response = non_streaming_response or {
             "choices": [{"message": {"role": "assistant", "content": "ok"}}]
         }
-        self.last_create_kwargs: dict[str, Any] | None = None
-        self.last_non_streaming_kwargs: dict[str, Any] | None = None
+        self.last_create_kwargs: dict | None = None
+        self.last_non_streaming_kwargs: dict | None = None
 
     @asynccontextmanager
     async def create(self, **kwargs: Any):
@@ -107,7 +304,7 @@ class FakeChatCompletions:
         self.last_create_kwargs = kwargs
         yield FakeStream(self._chunks)
 
-    async def create_non_streaming(self, **kwargs: Any) -> dict[str, Any]:
+    async def create_non_streaming(self, **kwargs: Any) -> dict:
         """Mimic the non-streaming API."""
         self.last_non_streaming_kwargs = kwargs
         return self._non_streaming_response
@@ -126,8 +323,8 @@ def make_client():
 
     def _factory(
         *,
-        chunks: list[FakeChunk] | None = None,
-        non_streaming_response: dict[str, Any] | None = None,
+        chunks: list | None = None,
+        non_streaming_response: dict | None = None,
     ) -> FakeClient:
         return FakeClient(
             FakeChatCompletions(
@@ -143,56 +340,7 @@ def make_client():
 def chunk():
     """Return a helper to build a single-choice :class:`FakeChunk` from a delta."""
 
-    def _build(delta: dict[str, Any]) -> FakeChunk:
+    def _build(delta: dict) -> FakeChunk:
         return FakeChunk([{"delta": delta}])
 
     return _build
-
-
-# ── Minimal ``homeassistant`` stub (TEST-3) ────────────────────────────────────
-# Tests that need to load modules which transitively import Home Assistant
-# (e.g. ``conversation.py`` for the schema-conversion helpers) install a stub
-# ``homeassistant`` package via ``install_homeassistant_stub``. The stub only
-# implements the surface area those modules touch, so it is intentionally
-# tiny. It is safe to call from multiple test files: re-installation replaces
-# the existing stub rather than stacking duplicate modules.
-
-
-class _HaStubMessage:
-    """Minimal stand-in for ``conversation.UserContent`` and friends."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.args = args
-        self.kwargs = kwargs
-
-
-def install_homeassistant_stub() -> None:
-    """Install a stub ``homeassistant`` package sufficient to import ``conversation.py``.
-
-    The stub exposes the names ``conversation.py`` touches at import time:
-    ``homeassistant.components.conversation.{ChatLog, UserContent}`` and
-    ``homeassistant.helpers.llm``. Anything beyond that is not provided and
-    will raise ``AttributeError`` if accessed — which is intentional so
-    tests fail loudly rather than silently skipping coverage.
-    """
-    ha_pkg = types.ModuleType("homeassistant")
-    sys.modules["homeassistant"] = ha_pkg
-
-    components_pkg = types.ModuleType("homeassistant.components")
-    components_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["homeassistant.components"] = components_pkg
-
-    conversation_mod = types.ModuleType("homeassistant.components.conversation")
-    conversation_mod.ChatLog = _HaStubMessage  # type: ignore[attr-defined]
-    conversation_mod.UserContent = _HaStubMessage  # type: ignore[attr-defined]
-    conversation_mod.AssistantContent = _HaStubMessage  # type: ignore[attr-defined]
-    conversation_mod.SystemContent = _HaStubMessage  # type: ignore[attr-defined]
-    sys.modules["homeassistant.components.conversation"] = conversation_mod
-
-    helpers_pkg = types.ModuleType("homeassistant.helpers")
-    helpers_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["homeassistant.helpers"] = helpers_pkg
-
-    llm_mod = types.ModuleType("homeassistant.helpers.llm")
-    llm_mod.llm = types.SimpleNamespace()  # type: ignore[attr-defined]  # placeholder attribute
-    sys.modules["homeassistant.helpers.llm"] = llm_mod

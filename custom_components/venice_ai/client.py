@@ -6,111 +6,11 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
 import httpx
 
 _LOGGER = logging.getLogger(__name__)
-
-# Import retry / timeout constants; fall back to hard-coded defaults when
-# const.py is not yet importable (e.g. during isolated unit tests).
-try:
-    from .const import (
-        MAX_RETRIES,  # MED-4
-        RETRY_BASE_DELAY,
-        RETRY_MAX_DELAY,
-        DEFAULT_HTTP_TIMEOUT,  # QUAL-2: tunable per-request timeout default.
-        DEFAULT_HTTP_KEEPALIVE,  # QUAL-2: connection-pool sizing.
-        DEFAULT_HTTP_MAX_CONNECTIONS,  # QUAL-2: connection-pool sizing.
-        DEFAULT_CHAT_TIMEOUT,
-        DEFAULT_CHAT_STREAM_TIMEOUT,
-        DEFAULT_TTS_TIMEOUT,
-        DEFAULT_STT_TIMEOUT,
-        DEFAULT_IMAGE_TIMEOUT,
-    )
-except ImportError:  # pragma: no cover
-    MAX_RETRIES = 3
-    RETRY_BASE_DELAY = 1.0
-    RETRY_MAX_DELAY = 30.0
-    DEFAULT_HTTP_TIMEOUT = 30.0
-    DEFAULT_HTTP_KEEPALIVE = 5
-    DEFAULT_HTTP_MAX_CONNECTIONS = 10
-    DEFAULT_CHAT_TIMEOUT = 120.0
-    DEFAULT_CHAT_STREAM_TIMEOUT = 300.0
-    DEFAULT_TTS_TIMEOUT = 60.0
-    DEFAULT_STT_TIMEOUT = 60.0
-    DEFAULT_IMAGE_TIMEOUT = 120.0
-
-
-def _sanitize_header_value(value: str | None) -> str:
-    """SEC-1: strip CR/LF from a header value before it goes on the wire.
-
-    Only the carriage-return and line-feed bytes are removed. We deliberately
-    do NOT:
-
-      * call ``.strip()`` — that would silently mutate a credential by
-        trimming leading/trailing whitespace (or NBSP/other Python-defined
-        whitespace), producing a byte-different key that authenticates
-        against Venice as "invalid" (regression seen in commit 64b115c,
-        which caused HTTP 401 on previously-valid keys).
-      * filter every char below 0x20 — Venice API keys are alphanumeric
-        today, but filtering by ord >= 0x20 plus a trailing .strip() was
-        the exact combination that broke valid keys. Header injection is
-        fully prevented by removing just ``\\r`` and ``\\n``; httpx itself
-        rejects any remaining control bytes on the wire.
-
-    The original, unmodified ``api_key`` is stored on ``self._api_key``;
-    this function is only applied at header-construction time so the
-    Authorization value is the credential byte-for-byte minus CR/LF.
-    """
-    if not value:
-        return ""
-    return value.replace("\r", "").replace("\n", "")
-
-
-# PERF-1: process-wide cache of model lists. Multiple client instances (e.g.
-# across config entries or per-test harnesses) reuse a single result for
-# CACHE_TTL_SECONDS. The cache stores plain dicts so it is independent of any
-# specific httpx client lifetime.
-_PROCESS_MODEL_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_PROCESS_MODEL_CACHE_TTL = 3600  # seconds; see also Models._CACHE_TTL_SECONDS
-
-
-@dataclass
-class VeniceAIMetrics:
-    """Lightweight in-memory usage/telemetry counters for a client instance.
-
-    These counters back the diagnostic sensor entities (LOW-4) so users can
-    monitor API usage, token consumption, and error rates without enabling
-    debug logging. All counters are cumulative for the lifetime of the client
-    (i.e. until the config entry is reloaded).
-    """
-
-    request_count: int = 0
-    error_count: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    last_error: str | None = None
-
-    def record_request(self) -> None:
-        """Increment the total request counter."""
-        self.request_count += 1
-
-    def record_error(self, error: BaseException) -> None:
-        """Increment the error counter and remember the last error message."""
-        self.error_count += 1
-        self.last_error = f"{type(error).__name__}: {error}"
-
-    def record_usage(self, usage: dict[str, Any] | None) -> None:
-        """Accumulate token usage from an API ``usage`` block, if present."""
-        if not isinstance(usage, dict):
-            return
-        self.prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
-        self.completion_tokens += int(usage.get("completion_tokens", 0) or 0)
-        self.total_tokens += int(usage.get("total_tokens", 0) or 0)
-
 
 
 class VeniceAIError(Exception):
@@ -131,6 +31,19 @@ class ServiceUnavailableError(VeniceAIError):
 
 class NetworkError(VeniceAIError):
     """Network-level error — could not reach the Venice AI API (timeout, connection refused, etc.)."""
+
+
+def _sanitize_header_value(value: str | None) -> str:
+    """SEC-1: strip CR/LF from a header value before it goes on the wire.
+
+    Only the carriage-return and line-feed bytes are removed — never
+    ``.strip()`` — so a valid credential is passed byte-for-byte minus
+    CR/LF and header injection remains impossible (httpx rejects any
+    remaining control bytes itself).
+    """
+    if not value:
+        return ""
+    return value.replace("\r", "").replace("\n", "")
 
 
 def _categorize_http_error(
@@ -164,8 +77,6 @@ class ChatCompletionChunk:
     def __init__(self, data: dict[str, Any]) -> None:
         """Initialize chat completion chunk."""
         self.choices = data.get("choices", [])
-        # Populated in the final chunk when stream_options.include_usage=True
-        self.usage: dict[str, Any] | None = data.get("usage")
 
 
 class ChatCompletions:
@@ -190,7 +101,6 @@ class ChatCompletions:
         venice_parameters: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
-        stream_options: dict[str, Any] | None = None,
     ) -> AsyncGenerator[AsyncGenerator[ChatCompletionChunk, None], None]:
         """Create a streaming chat completion."""
         data: dict[str, Any] = {
@@ -210,27 +120,18 @@ class ChatCompletions:
             data["tools"] = tools
         if tool_choice is not None:
             data["tool_choice"] = tool_choice
-        if stream_options is not None:
-            data["stream_options"] = stream_options
 
         response: httpx.Response | None = None
-        _connect_start = time.monotonic()
-        _LOGGER.debug("[PERF-HTTP] POST /chat/completions (stream) — opening connection")
         try:
             request = self.client._http_client.build_request(
                 "POST",
                 f"{self.client._base_url}/chat/completions",
                 headers=self.client._headers,
                 json=data,
-                timeout=DEFAULT_CHAT_STREAM_TIMEOUT,
+                timeout=300.0,
             )
             response = await self.client._http_client.send(request, stream=True)
             response.raise_for_status()
-            _LOGGER.debug(
-                "[PERF-HTTP] POST /chat/completions (stream) → HTTP %d, connection established in %.3fs",
-                response.status_code,
-                time.monotonic() - _connect_start,
-            )
 
         except httpx.HTTPStatusError as err:
             if response is not None:
@@ -249,8 +150,6 @@ class ChatCompletions:
             raise NetworkError(f"Request error (streaming chat): {err}") from err
 
         async def _stream() -> AsyncGenerator[ChatCompletionChunk, None]:
-            _chunk_count = 0
-            _stream_start = time.monotonic()
             try:
                 async for line in response.aiter_lines():
                     if not line or line == "data: [DONE]":
@@ -258,17 +157,11 @@ class ChatCompletions:
                     if line.startswith("data: "):
                         try:
                             chunk_data = json.loads(line[6:])
-                            _chunk_count += 1
                             yield ChatCompletionChunk(chunk_data)
                         except json.JSONDecodeError:
                             _LOGGER.warning("Failed to decode stream chunk: %s", line)
                     else:
                         _LOGGER.warning("Received unexpected line in stream: %s", line)
-                _LOGGER.debug(
-                    "[PERF-HTTP] POST /chat/completions stream finished — %d chunks in %.3fs",
-                    _chunk_count,
-                    time.monotonic() - _stream_start,
-                )
             except httpx.TransportError as err:
                 # Convert mid-stream transport failures (connection reset, server close,
                 # timeout) to a typed NetworkError so callers get consistent exceptions.
@@ -309,21 +202,16 @@ class ChatCompletions:
             payload = {**payload, **kwargs}
         payload = {**payload, "stream": False}
 
-        self.client.metrics.record_request()
         try:
             response = await self.client._async_request_with_retry(
                 "POST",
                 "/chat/completions",
                 headers=self.client._headers,
                 json=payload,
-                timeout=DEFAULT_CHAT_TIMEOUT,
+                timeout=120.0,
             )
             response.raise_for_status()
-            result = response.json()
-            # Accumulate token usage for the diagnostic sensors (LOW-4).
-            if isinstance(result, dict):
-                self.client.metrics.record_usage(result.get("usage"))
-            return result
+            return response.json()
 
         except httpx.HTTPStatusError as err:
             error_detail = getattr(err.response, "text", str(err))
@@ -339,22 +227,15 @@ class ChatCompletions:
                         error_message = error_json["error"]
                 except json.JSONDecodeError:
                     pass
-            categorized = _categorize_http_error(err.response.status_code, error_message, "chat completion")
-            self.client.metrics.record_error(categorized)
-            raise categorized from err
+            raise _categorize_http_error(err.response.status_code, error_message, "chat completion") from err
 
         except httpx.RequestError as err:
             _LOGGER.error("Venice AI request error: %s", err)
-            network_err = NetworkError(f"Request error (chat completion): {err}")
-            self.client.metrics.record_error(network_err)
-            raise network_err from err
+            raise NetworkError(f"Request error (chat completion): {err}") from err
 
         except json.JSONDecodeError as err:
             _LOGGER.error("Failed to decode non-streaming JSON response: %s", response.text)
-            decode_err = VeniceAIError(f"Failed to decode API response: {response.text}")
-            self.client.metrics.record_error(decode_err)
-            raise decode_err from err
-
+            raise VeniceAIError(f"Failed to decode API response: {response.text}") from err
 
 
 class Models:
@@ -368,25 +249,8 @@ class Models:
         self._cache: dict[str, tuple[list[dict], float]] = {}
 
     async def list(self, model_type: str = "text") -> list[dict]:
-        """List available models with TTL caching.
-
-        PERF-1: consults a process-wide cache first so multiple client
-        instances (config entries, tests) share one network round-trip per
-        model_type per TTL window. Falls back to the per-instance cache
-        (``self._cache``) and then to the live API if both are cold.
-        """
+        """List available models with TTL caching."""
         now = time.monotonic()
-        # PERF-1: process-wide cache check (keyed by model_type)
-        global_cached = _PROCESS_MODEL_CACHE.get(model_type)
-        if global_cached is not None:
-            timestamp, models = global_cached
-            if now - timestamp < _PROCESS_MODEL_CACHE_TTL:
-                _LOGGER.debug(
-                    "PERF-1: process-wide cache hit for %s models (%d entries)",
-                    model_type,
-                    len(models),
-                )
-                return models
         cached = self._cache.get(model_type)
         if cached is not None:
             models, timestamp = cached
@@ -408,9 +272,6 @@ class Models:
             model_data = response.json()
             models = model_data.get("data", [])
             self._cache[model_type] = (models, now)
-            # PERF-1: write through to process-wide cache so other clients in
-            # the same Python process can reuse this result.
-            _PROCESS_MODEL_CACHE[model_type] = (now, models)
             _LOGGER.debug("Successfully fetched %d %s models", len(models), model_type)
             return models
         except httpx.HTTPStatusError as err:
@@ -423,6 +284,35 @@ class Models:
         except json.JSONDecodeError as err:
             _LOGGER.error("Failed to decode models JSON response: %s", response.text)
             raise VeniceAIError("Failed to decode models API response") from err
+
+    async def get(self, model_id: str) -> dict:
+        """Fetch a single model by ID, returning its full spec including voices."""
+        cache_key = f"model:{model_id}"
+        now = time.monotonic()
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            data, timestamp = cached
+            if now - timestamp < self._CACHE_TTL_SECONDS:
+                return data  # type: ignore[return-value]
+
+        try:
+            response = await self.client._async_request_with_retry(
+                "GET",
+                f"/models/{model_id}",
+                headers=self.client._headers,
+            )
+            response.raise_for_status()
+            model_data = response.json()
+            self._cache[cache_key] = (model_data, now)
+            return model_data
+        except httpx.HTTPStatusError as err:
+            error_detail = getattr(err.response, "text", str(err))
+            _LOGGER.warning("Venice AI Models API HTTP error fetching %s: %s", model_id, error_detail)
+            raise _categorize_http_error(err.response.status_code, error_detail, f"fetching model {model_id}") from err
+        except httpx.RequestError as err:
+            raise NetworkError(f"Request error fetching model {model_id}: {err}") from err
+        except json.JSONDecodeError as err:
+            raise VeniceAIError(f"Failed to decode model {model_id} response") from err
 
 
 class Speech:
@@ -464,7 +354,7 @@ class Speech:
                 "/audio/speech",
                 headers=audio_headers,
                 json=data,
-                timeout=DEFAULT_TTS_TIMEOUT,
+                timeout=60.0,
             )
             response.raise_for_status()
             audio_data = response.content
@@ -520,32 +410,14 @@ class Speech:
                 "/audio/speech",
                 headers=audio_headers,
                 json=data,
-                timeout=DEFAULT_TTS_TIMEOUT,
+                timeout=60.0,
             )
             response.raise_for_status()
 
-            _tts_stream_start = time.monotonic()
-            _tts_first_chunk_t: float | None = None
-            _tts_chunk_count = 0
-            _tts_total_bytes = 0
-            _LOGGER.debug("[PERF-HTTP] POST /audio/speech (stream) — connection established, streaming chunks")
+            _LOGGER.debug("Streaming TTS response received, yielding chunks")
             try:
                 async for chunk in response.aiter_bytes():
-                    if _tts_first_chunk_t is None:
-                        _tts_first_chunk_t = time.monotonic() - _tts_stream_start
-                        _LOGGER.debug(
-                            "[PERF-HTTP] POST /audio/speech (stream) — first audio chunk received in %.3fs",
-                            _tts_first_chunk_t,
-                        )
-                    _tts_chunk_count += 1
-                    _tts_total_bytes += len(chunk)
                     yield chunk
-                _LOGGER.debug(
-                    "[PERF-HTTP] POST /audio/speech (stream) — complete: %d chunks, %d bytes total in %.3fs",
-                    _tts_chunk_count,
-                    _tts_total_bytes,
-                    time.monotonic() - _tts_stream_start,
-                )
             except httpx.TransportError as err:
                 _LOGGER.error("Streaming TTS transport error: %s", err)
                 raise NetworkError(f"Streaming TTS interrupted: {err}") from err
@@ -595,11 +467,6 @@ class Transcriptions:
             "Authorization": f"Bearer {self.client._api_key}",
         }
 
-        _stt_start = time.monotonic()
-        _LOGGER.debug(
-            "[PERF-HTTP] POST /audio/transcriptions — model=%s, format=%s, audio=%d bytes",
-            model, response_format, len(audio_data),
-        )
         try:
             response = await self.client._async_request_with_retry(
                 "POST",
@@ -607,14 +474,9 @@ class Transcriptions:
                 headers=multipart_headers,
                 files=files,
                 data=data,
-                timeout=DEFAULT_STT_TIMEOUT,
+                timeout=60.0,
             )
             response.raise_for_status()
-            _stt_elapsed = time.monotonic() - _stt_start
-            _LOGGER.debug(
-                "[PERF-HTTP] POST /audio/transcriptions — complete in %.3fs (HTTP %d)",
-                _stt_elapsed, response.status_code,
-            )
             if response_format == "json":
                 return response.json()
             else:
@@ -666,7 +528,7 @@ class Images:
                 "/images/generations",
                 headers=self.client._headers,
                 json=payload,
-                timeout=DEFAULT_IMAGE_TIMEOUT,
+                timeout=120.0,
             )
             response.raise_for_status()
             return response.json()
@@ -700,21 +562,11 @@ class AsyncVeniceAIClient:
         # into 401-rejected keys — regression in commit 64b115c.)
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        # QUAL-2 / PERF-4: pool sizing and default timeout sourced from constants
-        # so a single edit in const.py changes the whole client.
         self._http_client = http_client if http_client else httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
-            limits=httpx.Limits(
-                max_keepalive_connections=DEFAULT_HTTP_KEEPALIVE,
-                max_connections=DEFAULT_HTTP_MAX_CONNECTIONS,
-            ),
+            timeout=httpx.Timeout(30.0)
         )
         self._should_close_client = not http_client
         self._closed = False
-
-        # In-memory usage/telemetry counters backing the diagnostic sensor
-        # entities (LOW-4). Shared across all sub-API helpers via ``self``.
-        self.metrics = VeniceAIMetrics()
 
         self._headers = {
             "Authorization": f"Bearer {_sanitize_header_value(api_key)}",
@@ -733,69 +585,43 @@ class AsyncVeniceAIClient:
         endpoint: str,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Make an HTTP request with exponential backoff retry for transient failures.
-
-        Retry configuration is sourced from the module-level constants
-        MAX_RETRIES, RETRY_BASE_DELAY, and RETRY_MAX_DELAY (defined in
-        const.py — MED-4) so they can be tuned without touching this method.
-        """
+        """Make an HTTP request with exponential backoff retry for transient failures."""
+        max_retries = 3
         retryable_statuses = {429, 500, 502, 503}
-        url = f"{self._base_url}{endpoint}"
-        _req_start = time.monotonic()
+        base_delay = 1.0
 
-        for attempt in range(MAX_RETRIES + 1):
-            _attempt_start = time.monotonic()
-            if attempt == 0:
-                _LOGGER.debug("[PERF-HTTP] %s %s — sending request", method, endpoint)
-            else:
-                _LOGGER.debug(
-                    "[PERF-HTTP] %s %s — retry attempt %d/%d",
-                    method, endpoint, attempt + 1, MAX_RETRIES + 1,
-                )
+        url = f"{self._base_url}{endpoint}"
+
+        for attempt in range(max_retries + 1):
             try:
                 response = await self._http_client.request(method, url, **kwargs)
-                _attempt_elapsed = time.monotonic() - _attempt_start
 
                 if response.status_code in retryable_statuses:
-                    if attempt < MAX_RETRIES:
+                    if attempt < max_retries:
                         # Fully consume response body to free connection before retry
                         try:
                             await response.aread()
                         except Exception:
                             pass
-                        delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+                        delay = min(base_delay * (2 ** attempt), 30.0)
                         _LOGGER.warning(
-                            "[PERF-HTTP] %s %s → HTTP %d in %.3fs; retrying in %.1fs (attempt %d/%d)",
-                            method, endpoint, response.status_code, _attempt_elapsed,
-                            delay, attempt + 1, MAX_RETRIES,
+                            "Venice AI API returned HTTP %d, retrying in %.1fs (attempt %d/%d)",
+                            response.status_code, delay, attempt + 1, max_retries,
                         )
                         await asyncio.sleep(delay)
                         continue
 
-                _LOGGER.debug(
-                    "[PERF-HTTP] %s %s → HTTP %d in %.3fs%s",
-                    method, endpoint, response.status_code, _attempt_elapsed,
-                    f" ({attempt} retr{'y' if attempt == 1 else 'ies'}, {time.monotonic() - _req_start:.3f}s total)"
-                    if attempt > 0 else "",
-                )
                 return response
 
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as err:
-                _attempt_elapsed = time.monotonic() - _attempt_start
-                if attempt < MAX_RETRIES:
-                    delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+                if attempt < max_retries:
+                    delay = min(base_delay * (2 ** attempt), 30.0)
                     _LOGGER.warning(
-                        "[PERF-HTTP] %s %s → %s after %.3fs; retrying in %.1fs (attempt %d/%d)",
-                        method, endpoint, type(err).__name__, _attempt_elapsed,
-                        delay, attempt + 1, MAX_RETRIES,
+                        "Venice AI API request error (%s), retrying in %.1fs (attempt %d/%d)",
+                        type(err).__name__, delay, attempt + 1, max_retries,
                     )
                     await asyncio.sleep(delay)
                 else:
-                    _LOGGER.warning(
-                        "[PERF-HTTP] %s %s → %s after %.3fs; max retries exhausted (%.3fs total)",
-                        method, endpoint, type(err).__name__, _attempt_elapsed,
-                        time.monotonic() - _req_start,
-                    )
                     raise NetworkError(f"Max retries exceeded: {err}") from err
 
         # Should never reach here; all retry attempts exhausted

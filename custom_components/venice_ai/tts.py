@@ -1,11 +1,8 @@
 """Venice AI TTS platform."""
 from __future__ import annotations
 
-import datetime
 import logging
-import time
-from collections.abc import AsyncIterable
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from homeassistant.components.tts import (
     ATTR_AUDIO_OUTPUT,
@@ -22,16 +19,22 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .client import AsyncVeniceAIClient
 from .const import (
+    CONF_TTS_ENABLED,
     CONF_TTS_MODEL,
     CONF_TTS_RESPONSE_FORMAT,
     CONF_TTS_SPEED,
     CONF_TTS_VOICE,
     DOMAIN,
+    MODEL_VOICES,
+    RECOMMENDED_TTS_ENABLED,
     RECOMMENDED_TTS_MODEL,
     RECOMMENDED_TTS_RESPONSE_FORMAT,
     RECOMMENDED_TTS_SPEED,
     RECOMMENDED_TTS_VOICE,
+    VENICE_TTS_VOICES,
+    friendly_voice_label,
 )
 
 
@@ -43,7 +46,15 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Venice AI TTS platform."""
+    """Set up Venice AI TTS platform.
+
+    Honors the per-entry ``CONF_TTS_ENABLED`` toggle so the user can keep
+    the integration loaded for conversation/AI-task while routing voice
+    output through a different TTS engine.
+    """
+    if not config_entry.options.get(CONF_TTS_ENABLED, RECOMMENDED_TTS_ENABLED):
+        _LOGGER.debug("Venice AI TTS disabled by option; skipping entity setup")
+        return
     async_add_entities([VeniceAITTS(config_entry)])
 
 
@@ -86,8 +97,8 @@ class VeniceAITTS(TextToSpeechEntity):
         return [
             ATTR_VOICE,
             ATTR_AUDIO_OUTPUT,
-            CONF_TTS_MODEL,
-            CONF_TTS_SPEED,
+            "tts_model",
+            "tts_speed",
         ]
 
     @property
@@ -126,19 +137,11 @@ class VeniceAITTS(TextToSpeechEntity):
         )
         speed = self._get_tts_option(options, "tts_speed", CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)
 
-        _tts_start = time.monotonic()
+        _LOGGER.debug("Generating TTS for message: %s", message)
         _LOGGER.debug(
-            "[PERF-TTS] [+0.000s] TTS request at %s — text=%d chars, voice=%s, model=%s, format=%s, speed=%s",
-            datetime.datetime.now().isoformat(timespec="milliseconds"),
-            len(message),
-            voice, model, response_format, speed,
+            "TTS options: voice=%s, model=%s, format=%s, speed=%s",
+            voice, model, response_format, speed
         )
-
-        _LOGGER.debug(
-            "[PERF-TTS] [+%.3fs] Sending to Venice AI speech API (non-streaming)",
-            time.monotonic() - _tts_start,
-        )
-        _api_start = time.monotonic()
 
         audio_data = await self._client.speech.generate(
             text=message,
@@ -147,17 +150,9 @@ class VeniceAITTS(TextToSpeechEntity):
             audio_output=response_format,
             speed=speed,
         )
-
-        _api_elapsed = time.monotonic() - _api_start
-        _total_elapsed = time.monotonic() - _tts_start
-        _audio_bytes = len(audio_data) if audio_data else 0
-        _bytes_per_sec = _audio_bytes / _api_elapsed if _api_elapsed > 0 else 0.0
         _LOGGER.debug(
-            "[PERF-TTS] [+%.3fs] Audio received from Venice AI in %.3fs — %d bytes (%.0f bytes/s)",
-            _total_elapsed,
-            _api_elapsed,
-            _audio_bytes,
-            _bytes_per_sec,
+            "Received raw audio data from API: %d bytes",
+            len(audio_data) if audio_data else 0
         )
 
         if not audio_data:
@@ -166,50 +161,10 @@ class VeniceAITTS(TextToSpeechEntity):
         return (response_format, audio_data)
 
     def async_get_supported_voices(self, language: str) -> list[Voice] | None:
-        """Return available Venice voices for Home Assistant voice selection.
-
-        Only voices belonging to the currently configured TTS model are
-        returned.  Returning voices from all models at once would flood the
-        pipeline UI with hundreds of entries that don't work with the active
-        model.
-
-        Falls back to all known voices if the configured model cannot be
-        found in the coordinator cache (e.g. during first startup before the
-        coordinator has refreshed).
-        """
-        coordinator = getattr(self._config_entry.runtime_data, "coordinator", None)
-        if coordinator is None or coordinator.data is None:
-            return []
-
-        active_model = self._config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
-
-        # Find the active model in the coordinator's audio_models list and
-        # extract its voices using the same dual-source logic as coordinator.py.
-        audio_models: list[dict] = coordinator.data.get("audio_models", [])
-        for model in audio_models:
-            if not isinstance(model, dict):
-                continue
-            if model.get("id") != active_model:
-                continue
-            # Primary source: model_spec.voices
-            raw_spec = model.get("model_spec")
-            if isinstance(raw_spec, dict):
-                spec_voices = raw_spec.get("voices")
-                if isinstance(spec_voices, list):
-                    voices = [v for v in spec_voices if isinstance(v, str) and v]
-                    if voices:
-                        return [Voice(v, v) for v in voices]
-            # Fallback: legacy voice_models field
-            legacy = model.get("voice_models", [])
-            if isinstance(legacy, list):
-                voices = [v for v in legacy if isinstance(v, str) and v]
-                if voices:
-                    return [Voice(v, v) for v in voices]
-
-        # Active model not found in cache — fall back to all known voices so
-        # the dropdown is never completely empty.
-        voices_data: list[str] = coordinator.data.get("voices", [])
-        return [Voice(voice_id, voice_id) for voice_id in voices_data]
+        """Return voices for the currently-configured TTS model."""
+        model = self._config_entry.options.get(CONF_TTS_MODEL, RECOMMENDED_TTS_MODEL)
+        voices = MODEL_VOICES.get(model, VENICE_TTS_VOICES)
+        return [Voice(voice_id, friendly_voice_label(model, voice_id)) for voice_id in voices]
 
     async def async_stream_tts_audio(
         self, request: TTSAudioRequest
@@ -225,49 +180,22 @@ class VeniceAITTS(TextToSpeechEntity):
         )
         speed = self._get_tts_option(options, "tts_speed", CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)
 
-        _tts_start = time.monotonic()
+        _LOGGER.debug("Streaming TTS for message: %s", message)
         _LOGGER.debug(
-            "[PERF-TTS] [+0.000s] Streaming TTS request at %s — text=%d chars, voice=%s, model=%s, format=%s, speed=%s",
-            datetime.datetime.now().isoformat(timespec="milliseconds"),
-            len(message),
-            voice, model, response_format, speed,
+            "Streaming TTS options: voice=%s, model=%s, format=%s, speed=%s",
+            voice, model, response_format, speed
         )
 
         if not message:
             raise HomeAssistantError(f"No TTS message for {self.entity_id}")
 
-        _LOGGER.debug(
-            "[PERF-TTS] [+%.3fs] Opening streaming speech connection to Venice AI",
-            time.monotonic() - _tts_start,
-        )
-
-        async def _timed_stream() -> AsyncIterable[bytes]:
-            """Wrap the Venice streaming generator with per-chunk timing logs."""
-            _first_chunk = True
-            _chunk_count = 0
-            _total_bytes = 0
-            async for chunk in self._client.speech.generate_streaming(
+        return TTSAudioResponse(
+            response_format,
+            self._client.speech.generate_streaming(
                 text=message,
                 voice=voice,
                 model=model,
                 audio_output=response_format,
                 speed=speed,
-            ):
-                if _first_chunk:
-                    _LOGGER.debug(
-                        "[PERF-TTS] [+%.3fs] First streaming audio chunk received — %d bytes",
-                        time.monotonic() - _tts_start,
-                        len(chunk),
-                    )
-                    _first_chunk = False
-                _chunk_count += 1
-                _total_bytes += len(chunk)
-                yield chunk
-            _LOGGER.debug(
-                "[PERF-TTS] [+%.3fs] Streaming TTS complete — %d chunks, %d bytes total",
-                time.monotonic() - _tts_start,
-                _chunk_count,
-                _total_bytes,
             )
-
-        return TTSAudioResponse(response_format, _timed_stream())
+        )

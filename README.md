@@ -17,7 +17,7 @@ The Venice AI integration allows you to enhance your Home Assistant setup with a
 2. Click on HACS in the sidebar.
 3. Go to "Integrations".
 4. Click the three dots in the top right corner and select "Custom repositories".
-5. Add `https://github.com/grasponcrypto/venice_ai` as a repository with category "Integration".
+5. Add `https://github.com/steven-ahfu/venice_ai` as a repository with category "Integration".
 6. Click "Add".
 7. Search for "Venice AI" in the integrations tab.
 8. Click "Download" and follow the installation instructions.
@@ -26,7 +26,7 @@ The Venice AI integration allows you to enhance your Home Assistant setup with a
 ### Option 2: Manual Installation
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/grasponcrypto/venice_ai.git
+   git clone https://github.com/steven-ahfu/venice_ai.git
    ```
 
 2. **Copy the integration files:**
@@ -54,60 +54,51 @@ The current default model is Llama 3.3 70B (llama-3.3-70b), which provides excel
 
 For reasoning models like Venice Reasoning (qwen-2.5-qwq-32b) or DeepSeek R1 671B, you can disable thinking for lower latency by enabling the "Disable thinking" option in the configuration.
 
-## Operations
+## Custom Tools
 
-Once the integration is configured, the following surfaces are available:
+You can extend Venice AI with your own tools by creating `/config/venice_ai/tools.yaml`. Tools are merged with the built-in defaults at startup — your tools take precedence on name conflicts.
 
-* **Conversation agent** — A "Venice AI" agent appears in Settings → Voice Assistants → Expose, and can be selected in any Assist pipeline.
-* **AI Task entity** — `ai_task.venice_ai_<entry_id>` exposes the model as a structured-data generator for dashboards, scripts, and automations.
-* **Text-to-speech** — A `tts.venice_ai_<entry_id>` entity streams synthesized speech from Venice's audio models for use with media players and announce automations.
-* **Sensor entity** — `sensor.venice_ai_<entry_id>` reports the latest request count, token usage, and the most recent error message. Useful for dashboarding and HA statistics.
-* **Coordinator refresh** — A `venice_ai.refresh_data` action lets you trigger an immediate data refresh on demand.
+Supported tool types: `native`, `template`, `rest`, `scrape`, `bash`, `read_file`, `write_file`, `edit_file`, `sqlite`, `composite`.
 
-### Reconfiguration
+See [`docs/custom-tools-examples.md`](docs/custom-tools-examples.md) for working examples including:
+- **Morning briefing** — weather + calendar + battery status in one call
+- **Shopping list** — read and add items via conversation
+- **Notes** — append and read freeform timestamped notes
+- **Pyscript bridge** — call any `@service` pyscript function by name
+- **SQLite analytics** — query the recorder DB for historical insights
 
-Use the integration's "Configure" button to change the API key, model, temperature, max tokens, prompt, or to toggle the "Disable thinking" option for reasoning models. Changes are applied immediately without a restart; in-flight requests will complete using the previous settings.
+## Skills
 
-### Removing the integration
+Skills inject extra context into the system prompt before each conversation,
+teaching the assistant how to behave in your setup without hard-coding it into
+every prompt. A skill is a `SKILL.md` file with YAML frontmatter:
 
-From Settings → Devices & Services → Venice AI, click the three-dot menu and select "Delete". This also removes all associated entities and the AI Task / TTS entities that were created for that entry.
+```
+custom_components/venice_ai/skills/<skill-name>/SKILL.md
+```
 
-## Troubleshooting
+```markdown
+---
+description: One sentence telling the assistant what this skill covers.
+---
 
-| Symptom | Likely cause | Resolution |
-| --- | --- | --- |
-| `401 Unauthorized` in the log | Invalid or expired Venice AI API key | Update the key via the integration's Configure flow. |
-| `429 Rate limit exceeded` | Venice is throttling the account | Lower request concurrency, reduce prompt size, or upgrade the Venice plan. |
-| `5xx Service Unavailable` | Venice upstream incident | The integration retries with backoff; verify status on the Venice dashboard before opening an issue. |
-| `Connection refused` / `Timeout` | Network egress is blocked from Home Assistant to `api.venice.ai` | Allow outbound HTTPS to `api.venice.ai` on port 443. |
-| `No models returned` during setup | Venice account has no function-calling-capable models, or the API key is scoped too narrowly | Confirm the key has the `models:read` and `chat:write` scopes in your Venice account. |
-| Agent never responds | Selected model does not support tool calling | Pick a function-calling-capable model — the integration filters the model list to these by default. |
-| Reasoning model is very slow / verbose | Thinking tokens are being emitted alongside the answer | Enable **Disable thinking** in the integration options to skip reasoning output for faster responses. |
-| TTS produces no audio | Selected voice model is unavailable for the chosen language, or audio playback is muted on the target media player | Pick another voice model in the TTS entity options and confirm the target media player is not muted. |
+# Guidance
 
-### Diagnostics
+- Write the behavioral instructions as plain Markdown here.
+- Everything below the frontmatter is appended to the system prompt when the
+  skill is enabled.
+```
 
-1. Enable debug logging for this integration by adding the following to `configuration.yaml`:
-   ```yaml
-   logger:
-     default: warning
-     logs:
-       custom_components.venice_ai: debug
-   ```
-2. Restart Home Assistant and reproduce the issue.
-3. Capture the relevant log lines from `home-assistant.log` before opening an issue.
+Two skills ship with the integration — `home-assistant` (safe device control)
+and `venice-assistant` (voice/chat behavior). Enable the skills you want on the
+**Skills & Function Calling** step of the integration's options flow.
 
-### Getting help
-
-When opening a bug report, please include:
-
-* Home Assistant version (`Settings → About`)
-* Integration version (visible in HACS under the Venice AI integration)
-* Relevant log lines with debug logging enabled
-* A short description of what you expected vs. what happened
+After adding or editing a skill, pick it up without restarting by calling the
+**`venice_ai.reload_skills`** service (Developer Tools → Actions), or restart
+Home Assistant.
 
 ## Support
-If you encounter any issues or have feature requests, please open an issue on our [GitHub Issues page](https://github.com/grasponcrypto/venice_ai/issues).
+If you encounter any issues or have feature requests, please open an issue on our [GitHub Issues page](https://github.com/steven-ahfu/venice_ai/issues).
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.

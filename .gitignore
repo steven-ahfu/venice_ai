@@ -1,6 +1,9 @@
 # mine
 open_ai_example/
-docs/
+docs/*
+!docs/custom-tools-examples.md
+.agents/
+.claude/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -179,11 +182,5 @@ cython_debug/
 tasks/
 scripts/
 local_documents/
-.cline/
-*.txt
-!requirements.txt
-apply_changes.py
-fix_all.py
-fix_log.txt
-test_*.py
-!tests/test_*.py
+.cline/"CODE_REVIEW.md"  
+deploy.sh
