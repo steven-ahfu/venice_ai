@@ -569,6 +569,9 @@ class VeniceAIOptionsFlow(OptionsFlow):
                     mode=SelectSelectorMode.DROPDOWN,
                 )
             ),
+            # Only the JSON formats yield a clean transcript for the voice
+            # pipeline. srt/vtt/text would feed subtitle markup or raw bodies
+            # as the "recognized speech", so they are intentionally not offered.
             vol.Optional(
                 CONF_STT_RESPONSE_FORMAT,
                 description={"suggested_value": options.get(CONF_STT_RESPONSE_FORMAT, RECOMMENDED_STT_RESPONSE_FORMAT)},
@@ -576,10 +579,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 SelectSelectorConfig(
                     options=[
                         SelectOptionDict(label="JSON", value="json"),
-                        SelectOptionDict(label="Text", value="text"),
-                        SelectOptionDict(label="SRT", value="srt"),
-                        SelectOptionDict(label="Verbose JSON", value="verbose_json"),
-                        SelectOptionDict(label="VTT", value="vtt"),
+                        SelectOptionDict(label="Verbose JSON (word timestamps)", value="verbose_json"),
                     ],
                     mode=SelectSelectorMode.DROPDOWN,
                 )

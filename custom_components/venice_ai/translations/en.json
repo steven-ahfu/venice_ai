@@ -77,7 +77,7 @@
                     "tts_speed": "Playback speed multiplier. 1.0 = normal. Range 0.25–4.0.",
                     "stt_enabled": "Register Venice AI as a Speech-to-Text provider so voice assistant pipelines can use it to transcribe spoken input.",
                     "stt_model": "The Venice AI model used for speech transcription.",
-                    "stt_response_format": "Format of the transcription response. JSON includes metadata; text is plain; verbose_json adds word-level detail; SRT/VTT are subtitle formats.",
+                    "stt_response_format": "Format of the transcription response. JSON returns just the text; Verbose JSON adds word-level detail (required for word timestamps).",
                     "stt_timestamps": "Include word-level timestamps in the transcription response. Requires verbose_json response format."
                 }
             },
