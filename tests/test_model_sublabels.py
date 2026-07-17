@@ -10,6 +10,7 @@ sys.path.insert(0, ".")
 
 # conftest.py stubs all HA modules before this runs
 from custom_components.venice_ai.const import (
+    align_cost_labels,
     friendly_voice_label,
     tts_model_sublabel,
     stt_model_sublabel,
@@ -111,3 +112,29 @@ def test_kokoro_voice_label_unknown_prefix_falls_back():
 
 def test_non_kokoro_voice_ids_unchanged():
     assert friendly_voice_label("tts-orpheus", "tara") == "tara"
+
+
+def test_align_cost_labels_common_right_edge():
+    labels = align_cost_labels([
+        "Kokoro Text to Speech     $0.19/hr",
+        "xAI TTS v1     $1.03/hr",
+    ])
+    # Costs end at a common column: equal total character width per row.
+    assert len(labels[0]) == len(labels[1])
+    assert labels[0].endswith("$0.19/hr") and labels[1].endswith("$1.03/hr")
+    assert "\u2007" in labels[1] and "\u00a0" not in labels[1]
+
+
+def test_align_cost_labels_passes_through_costless_labels():
+    labels = align_cost_labels(["Priced     $1.00/hr", "No Price Model"])
+    assert labels[1] == "No Price Model"
+
+
+def test_align_cost_labels_counts_emoji_as_double_width():
+    starred, plain = align_cost_labels([
+        "Model A ⭐     $1.00/M",
+        "Model AAA     $1.00/M",
+    ])
+    # "Model A ⭐" renders about as wide as "Model AAA" (emoji ≈ 2 cells),
+    # so both rows should get the same padded width in character cells.
+    assert len(starred) + 1 == len(plain)

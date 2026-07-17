@@ -39,7 +39,7 @@ def test_curation_falls_back_to_full_list_when_no_overlap():
     assert curate_chat_models(fetched, current_model="brand-new-model-a") == fetched
 
 
-def test_label_prefers_live_pricing_and_appends_tier():
+def test_label_prefers_live_pricing_and_stars_recommended():
     label = _chat_model_label({
         "id": "qwen3-5-9b",
         "model_spec": {
@@ -47,14 +47,14 @@ def test_label_prefers_live_pricing_and_appends_tier():
             "pricing": {"input": {"usd": 1.0}, "output": {"usd": 3.2}},
         },
     })
-    # 0.60 * 1.00 + 0.40 * 3.20 = 1.88, and curated tier is appended
-    assert label == "Qwen 3.5 9B · ~$1.88/M · recommended"
+    # 0.60 * 1.00 + 0.40 * 3.20 = 1.88; recommended tier shows as a star
+    assert label == "Qwen 3.5 9B ⭐     $1.88/M"
 
 
 def test_label_falls_back_to_snapshot_pricing_for_curated_model():
     label = _chat_model_label({"id": "zai-org-glm-4.7"})
-    # 0.60 * 0.55 + 0.40 * 2.65 = 1.39
-    assert label == "GLM 4.7 · ~$1.39/M · step-up"
+    # 0.60 * 0.55 + 0.40 * 2.65 = 1.39; non-recommended tiers get no marker
+    assert label == "GLM 4.7     $1.39/M"
 
 
 def test_label_unknown_model_without_pricing_is_name_only():

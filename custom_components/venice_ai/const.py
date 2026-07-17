@@ -280,6 +280,44 @@ TTS_CHARS_PER_HOUR = 55_000
 # plain spaces to one.
 _COST_SEPARATOR = "\u00a0" * 5
 
+# Figure space (digit-width) used by align_cost_labels \u2014 wider than a normal
+# space, so character-count padding tracks rendered width more closely.
+_PAD_CHAR = "\u2007"
+
+
+def _label_width(text: str) -> int:
+    """Approximate rendered width in character cells (emoji count as 2)."""
+    return len(text) + sum(1 for ch in text if ord(ch) > 0x2100)
+
+
+def align_cost_labels(labels: list[str], gap: int = 3) -> list[str]:
+    """Re-pad ``name<sep>cost`` labels so costs end at a common right edge.
+
+    Splits each label on ``_COST_SEPARATOR`` and pads the gap with figure
+    spaces so every row has the same total character width \u2014 costs line up
+    in a column on the right of the dropdown. Labels without a separator
+    (no pricing) pass through unchanged. Alignment is approximate: the HA
+    frontend uses a proportional font, and per-character padding is the best
+    a plain-string label can do.
+    """
+    pairs: list[tuple[str, str | None]] = []
+    for label in labels:
+        name, sep, cost = label.rpartition(_COST_SEPARATOR)
+        pairs.append((name, cost) if sep else (label, None))
+    widths = [
+        _label_width(name) + _label_width(cost)
+        for name, cost in pairs
+        if cost is not None
+    ]
+    if not widths:
+        return list(labels)
+    target = max(widths) + gap
+    return [
+        name if cost is None
+        else name + _PAD_CHAR * max(gap, target - _label_width(name) - _label_width(cost)) + cost
+        for name, cost in pairs
+    ]
+
 
 def tts_model_sublabel(model: dict | str) -> str:
     """Return e.g. ``"Kokoro Text to Speech     $0.19/hr"``.

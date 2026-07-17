@@ -30,6 +30,8 @@ from homeassistant.helpers.selector import (
 )
 from .client import AsyncVeniceAIClient, AuthenticationError, VeniceAIError
 from .const import (
+    _COST_SEPARATOR,
+    align_cost_labels,
     VOICE_CHAT_MODELS,
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
@@ -114,6 +116,15 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+def _align_options(options: list[SelectOptionDict]) -> list[SelectOptionDict]:
+    """Right-align the costs in a dropdown's ``name<sep>cost`` labels."""
+    labels = align_cost_labels([o["label"] for o in options])
+    return [
+        SelectOptionDict(label=label, value=o["value"])
+        for label, o in zip(labels, options)
+    ]
+
+
 def _truncate(text: str, limit: int) -> str:
     """Collapse whitespace, escape markdown table pipes, and cap length."""
     text = " ".join(text.split()).replace("|", "\\|")
@@ -129,26 +140,28 @@ def _chat_model_label(model: dict[str, Any]) -> str:
     so a model that costs $1/M in and $3.20/M out is shown as
     ``(0.60 × $1.00) + (0.40 × $3.20) = $1.88/M chat tokens``.
     Live API pricing is preferred; for curated models the static snapshot in
-    ``VOICE_CHAT_MODELS`` is the fallback, and their tier is appended. Models
-    that advertise web-search support are prefixed with 🔍 so the web-search
-    toggle's applicability is visible in the picker.
-    Returns ``"[🔍 ]<Display Name> · ~$X.YZ/M · <tier>"``.
+    ``VOICE_CHAT_MODELS`` is the fallback. Recommended-tier models get a ⭐
+    after the name; models that advertise web-search support are prefixed
+    with 🔍 so the web-search toggle's applicability is visible in the picker.
+    Returns ``"[🔍 ]<Display Name>[ ⭐]<sep>$X.YZ/M"`` — the same
+    name-then-cost shape as the TTS/STT labels, so align_cost_labels can
+    right-align the costs.
     """
     spec = model.get("model_spec") or {}
     curated = VOICE_CHAT_MODELS.get(model.get("id", ""))
     name = spec.get("name") or (curated or {}).get("name") or model.get("id", "Unknown")
     web_search_marker = "🔍 " if spec.get("capabilities", {}).get("supportsWebSearch") else ""
+    star = " ⭐" if (curated or {}).get("tier") == "recommended" else ""
     pricing = (spec.get("pricing") or {})
     input_price = pricing.get("input", {}).get("usd")
     output_price = pricing.get("output", {}).get("usd")
     if (input_price is None or output_price is None) and curated:
         input_price = curated.get("input_usd")
         output_price = curated.get("output_usd")
-    tier_suffix = f" · {curated['tier']}" if curated else ""
     if input_price is None or output_price is None:
-        return f"{web_search_marker}{name}{tier_suffix}"
+        return f"{web_search_marker}{name}{star}"
     blended = 0.60 * input_price + 0.40 * output_price
-    return f"{web_search_marker}{name} · ~${blended:.2f}/M{tier_suffix}"
+    return f"{web_search_marker}{name}{star}{_COST_SEPARATOR}${blended:.2f}/M"
 
 
 def curate_chat_models(
@@ -424,6 +437,9 @@ class VeniceAIOptionsFlow(OptionsFlow):
     ) -> vol.Schema:
         """Build the voluptuous options schema from fetched model lists.
 
+        Model labels arrive as ``name<sep>cost``; each dropdown's labels are
+        re-padded here so the costs line up at a common right edge.
+
         The TTS voice picker lives on a dedicated follow-up step so its
         choices can depend on the TTS model the user just selected. STT and
         TTS sub-fields are otherwise always included so re-enabling a toggle
@@ -431,6 +447,9 @@ class VeniceAIOptionsFlow(OptionsFlow):
         save.  Stale values are cleared in ``async_step_init`` when the toggle
         is saved as off.
         """
+        models_options = _align_options(models_options)
+        tts_models_options = _align_options(tts_models_options)
+        stt_models_options = _align_options(stt_models_options)
         options = self.config_entry.options
         if llm_api_options is None:
             llm_api_options = []
