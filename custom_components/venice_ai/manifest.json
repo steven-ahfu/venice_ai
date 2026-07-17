@@ -1,18 +1,26 @@
 {
-    "domain": "venice_ai",
-    "name": "VeniceAI Conversation",
-    "version": "1.0.1",
-    "documentation": "https://github.com/steven-ahfu/venice_ai",
-    "issue_tracker": "https://github.com/steven-ahfu/venice_ai/issues",
-    "requirements": [
-        "voluptuous-openapi>=0.0.4",
-        "beautifulsoup4>=4.12.0"
-    ],
-    "dependencies": ["conversation"],
-    "after_dependencies": ["ai_task", "assist_pipeline", "intent"],
-    "codeowners": ["@steven-ahfu"],
-    "iot_class": "cloud_polling",
-    "integration_type": "service",
-    "config_flow": true,
-    "homeassistant": "2024.4.0"
+  "domain": "venice_ai",
+  "name": "VeniceAI Conversation",
+  "version": "1.0.2",
+  "documentation": "https://github.com/steven-ahfu/venice_ai",
+  "issue_tracker": "https://github.com/steven-ahfu/venice_ai/issues",
+  "requirements": [
+    "voluptuous-openapi>=0.0.4",
+    "beautifulsoup4>=4.12.0"
+  ],
+  "dependencies": [
+    "conversation"
+  ],
+  "after_dependencies": [
+    "ai_task",
+    "assist_pipeline",
+    "intent"
+  ],
+  "codeowners": [
+    "@steven-ahfu"
+  ],
+  "iot_class": "cloud_polling",
+  "integration_type": "service",
+  "config_flow": true,
+  "homeassistant": "2024.4.0"
 }
