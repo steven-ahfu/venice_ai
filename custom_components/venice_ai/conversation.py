@@ -71,10 +71,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Default system prompt for Venice AI
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful AI assistant for {{ ha_name }}. "
-    "You can control lights, switches, climate, media players, and other smart home devices. "
-    "Always be concise and helpful."
-    "{% if skills %}\n\n## Available Skills\n"
+    "You are a helpful AI assistant for {{ ha_name }}.\n\n"
+    "Respond in 1–3 concise sentences by default.\n"
+    "{% if skills %}\n## Available Skills\n"
     "{% for skill in skills %}### {{ skill.name }}\n{{ skill.content }}\n{% endfor %}"
     "{% endif %}"
 )
