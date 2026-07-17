@@ -60,6 +60,7 @@ from .base import Function
 _LOGGER = logging.getLogger(__name__)
 
 FILE_READ_SIZE_LIMIT = 1024 * 1024  # 1 MB
+FILE_WRITE_SIZE_LIMIT = 1024 * 1024  # 1 MB
 
 
 def _resolve_path(hass: HomeAssistant, raw_path: str, allow_dirs: list[str] | None = None) -> Path:
@@ -152,6 +153,9 @@ class WriteFileFunction(Function):
         raw_path = Template(function_config["path"], hass).async_render(arguments, parse_result=False)
         content = Template(function_config["content"], hass).async_render(arguments, parse_result=False)
         allow_dirs = function_config.get("allow_dir")
+        content_bytes = len(content.encode())
+        if content_bytes > FILE_WRITE_SIZE_LIMIT:
+            return {"error": f"Content too large ({content_bytes} bytes, limit {FILE_WRITE_SIZE_LIMIT})"}
         try:
             path = _resolve_path(hass, raw_path, allow_dirs)
             path.parent.mkdir(parents=True, exist_ok=True)

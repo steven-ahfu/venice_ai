@@ -61,6 +61,24 @@ _LOGGER = logging.getLogger(__name__)
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
 
+# Default per-request timeout and response body cap for LLM-reachable fetches.
+# Both are overridable per tool via ``timeout`` / ``max_response_bytes``.
+_DEFAULT_HTTP_TIMEOUT = 15.0
+_DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MiB
+
+
+async def _read_capped_text(response: Any, max_bytes: int) -> str:
+    """Return the response body as text, truncated to ``max_bytes``.
+
+    Guards the tool loop and the model context against a large or slow
+    LLM-reachable URL exhausting memory.
+    """
+    raw = response.content
+    if len(raw) > max_bytes:
+        raw = raw[:max_bytes]
+    encoding = response.encoding or "utf-8"
+    return raw.decode(encoding, errors="replace")
+
 
 def _assert_url_safe(url: str, allow_internal: bool) -> None:
     """Reject schemes other than http(s) and (unless opted in) URLs that resolve
@@ -126,17 +144,28 @@ class RestFunction(Function):
             allow_internal = bool(function_config.get("allow_internal_urls", False))
             _assert_url_safe(resource, allow_internal)
 
+            timeout = float(function_config.get("timeout", _DEFAULT_HTTP_TIMEOUT))
+            max_bytes = int(function_config.get("max_response_bytes", _DEFAULT_MAX_RESPONSE_BYTES))
+
             client = get_async_client(hass)
-            response = await client.request(method, resource, content=payload, headers=headers)
+            # follow_redirects=False so a public URL cannot 30x-redirect past the
+            # SSRF guard to an internal address (the guard only validates the
+            # initial URL).
+            response = await client.request(
+                method, resource, content=payload, headers=headers,
+                timeout=timeout, follow_redirects=False,
+            )
             response.raise_for_status()
 
+            text = await _read_capped_text(response, max_bytes)
             value_template = function_config.get("value_template")
             if value_template:
+                is_json = response.headers.get("content-type", "").startswith("application/json")
                 return Template(value_template, hass).async_render(
-                    {"value": response.text, "value_json": response.json() if response.headers.get("content-type", "").startswith("application/json") else {}},
+                    {"value": text, "value_json": response.json() if is_json else {}},
                     parse_result=False,
                 )
-            return response.text
+            return text
         except Exception as err:
             _LOGGER.warning("REST function failed: %s", err)
             return {"error": str(err)}
@@ -177,10 +206,13 @@ class ScrapeFunction(Function):
             allow_internal = bool(function_config.get("allow_internal_urls", False))
             _assert_url_safe(resource, allow_internal)
 
+            timeout = float(function_config.get("timeout", _DEFAULT_HTTP_TIMEOUT))
+            max_bytes = int(function_config.get("max_response_bytes", _DEFAULT_MAX_RESPONSE_BYTES))
+
             client = get_async_client(hass)
-            response = await client.get(resource)
+            response = await client.get(resource, timeout=timeout, follow_redirects=False)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
+            soup = BeautifulSoup(await _read_capped_text(response, max_bytes), "html.parser")
 
             select = function_config.get("select")
             attribute = function_config.get("attribute")

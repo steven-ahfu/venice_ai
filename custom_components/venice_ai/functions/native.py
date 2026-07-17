@@ -3,9 +3,12 @@
 Dispatches on `operation`:
   * `execute_service`  — calls `hass.services.async_call(domain, service,
                          service_data, blocking=True)`. Enforces the exposed-
-                         entity allowlist when `service_data.entity_id` is
-                         set: unknown entities raise `EntityNotFound`,
-                         non-exposed ones raise `EntityNotExposed`.
+                         entity allowlist on every `entity_id` (flat or under
+                         `target`, string or list): unknown entities raise
+                         `EntityNotFound`, non-exposed ones raise
+                         `EntityNotExposed`. Broad targeting by
+                         `area_id`/`device_id`/`label_id` is rejected because
+                         it cannot be checked against the allowlist.
   * `get_history`      — queries the recorder for state changes of
                          `entity_ids` between `start_time` and `end_time`
                          (ISO 8601). Defaults to the last 24h.
@@ -219,17 +222,48 @@ class NativeFunction(Function):
         domain = arguments.get("domain")
         service = arguments.get("service")
         service_data = arguments.get("service_data", {})
-        entity_id = service_data.get("entity_id") if isinstance(service_data, dict) else None
 
         if not domain or not service:
             return {"error": "domain and service are required"}
+        if not isinstance(service_data, dict):
+            return {"error": "service_data must be an object"}
 
-        if entity_id:
+        # The exposure allowlist is the only access-control boundary on this
+        # tool. It can only be enforced against explicit entity_ids, so reject
+        # area/device/label/target targeting outright — otherwise the model (or
+        # a prompt-injection payload) could act on non-exposed entities by
+        # naming an area or device instead of an entity. Collect entity_id
+        # from both the flat and nested (`target`) forms and validate each one.
+        target = service_data.get("target")
+        broad_keys = {"area_id", "device_id", "label_id"}
+        used_broad = broad_keys & set(service_data)
+        if isinstance(target, dict):
+            used_broad |= broad_keys & set(target)
+        if used_broad:
+            return {
+                "error": (
+                    "Targeting by "
+                    + ", ".join(sorted(used_broad))
+                    + " is not allowed; specify an explicit entity_id for an "
+                    "exposed entity instead."
+                )
+            }
+
+        raw_ids: list[str] = []
+        for source in (service_data.get("entity_id"), (target or {}).get("entity_id")):
+            if isinstance(source, str):
+                raw_ids.append(source)
+            elif isinstance(source, list):
+                raw_ids.extend(str(i) for i in source)
+
+        if raw_ids:
             exposed_ids = {e["entity_id"] for e in exposed_entities}
-            if entity_id not in hass.states.async_entity_ids():
-                raise EntityNotFound(entity_id)
-            if entity_id not in exposed_ids:
-                raise EntityNotExposed(entity_id)
+            known_ids = set(hass.states.async_entity_ids())
+            for eid in raw_ids:
+                if eid not in known_ids:
+                    raise EntityNotFound(eid)
+                if eid not in exposed_ids:
+                    raise EntityNotExposed(eid)
 
         try:
             await hass.services.async_call(
