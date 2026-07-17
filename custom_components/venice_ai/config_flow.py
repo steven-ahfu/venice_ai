@@ -114,6 +114,14 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+def _truncate(text: str, limit: int) -> str:
+    """Collapse whitespace, escape markdown table pipes, and cap length."""
+    text = " ".join(text.split()).replace("|", "\\|")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def _chat_model_label(model: dict[str, Any]) -> str:
     """Format a chat model dropdown label with an estimated blended cost.
 
@@ -638,6 +646,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 SelectSelectorConfig(
                     options=skill_options,
                     multiple=True,
+                    mode=SelectSelectorMode.LIST,
                 )
             ),
         })
@@ -761,32 +770,43 @@ class VeniceAIOptionsFlow(OptionsFlow):
             skill_manager = await SkillManager.async_get_instance(self.hass)
             await skill_manager.async_load_skills()
             skill_options = [
-                SelectOptionDict(label=f"{s.name} — {s.description}", value=s.name)
-                for s in skill_manager.get_all_skills()
+                SelectOptionDict(
+                    label=f"{s.name} — {_truncate(s.description, 80)}",
+                    value=s.name,
+                )
+                for s in sorted(skill_manager.get_all_skills(), key=lambda s: s.name.lower())
             ]
         except Exception:
             _LOGGER.debug("Could not load skills for options form", exc_info=True)
 
-        # Load tools for the read-only description.
+        # Load tools for the read-only description table.
         tools_path = "config/venice_ai/tools.yaml"
-        tools_names = "(none)"
+        tools_count = 0
+        tools_table = "_No tools loaded._"
         try:
             from .tools import ToolManager
             tool_manager = await ToolManager.async_get_instance(self.hass)
             await tool_manager.async_load_tools()
             tools_path = str(tool_manager.user_tools_path)
-            loaded = tool_manager.get_all_tools()
+            loaded = sorted(tool_manager.get_all_tools(), key=lambda t: t.name.lower())
+            tools_count = len(loaded)
             if loaded:
-                tools_names = ", ".join(f"`{t.name}`" for t in loaded)
+                rows = ["| Tool | Type | Description |", "|---|---|---|"]
+                rows += [
+                    f"| `{t.name}` | {t.type} | {_truncate(t.description, 90)} |"
+                    for t in loaded
+                ]
+                tools_table = "\n".join(rows)
         except Exception:
             _LOGGER.debug("Could not load tools for options form", exc_info=True)
-            tools_names = "(error loading tools)"
+            tools_table = "_Could not load tools — check the Home Assistant log._"
 
         return self.async_show_form(
             step_id="skills_and_tools",
             data_schema=self._build_skills_schema(skill_options),
             description_placeholders={
                 "tools_path": tools_path,
-                "tools_names": tools_names,
+                "tools_count": str(tools_count),
+                "tools_table": tools_table,
             },
         )

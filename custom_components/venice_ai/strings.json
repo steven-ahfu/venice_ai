@@ -7,13 +7,13 @@
             "api_key": "Venice AI API Key"
           },
           "data_description": {
-            "api_key": "Your Venice AI API key. Get one at venice.ai → Settings → API Keys."
+            "api_key": "Get one at venice.ai → Settings → API Keys."
           },
           "submit": "Next"
         },
         "reauth_confirm": {
           "title": "Re-authenticate Venice AI",
-          "description": "The Venice AI API key for {name} is no longer valid. Please enter a new API key to reconnect.",
+          "description": "The API key for {name} is no longer valid. Enter a new key to reconnect.",
           "data": {
             "api_key": "Venice AI API Key"
           }
@@ -23,7 +23,7 @@
         "invalid_auth": "Invalid API key",
         "cannot_connect": "Failed to connect to Venice AI",
         "unknown": "Unexpected error",
-        "invalid_llm_api": "The selected Home Assistant control option is not available. Please choose a valid option or leave blank to disable."
+        "invalid_llm_api": "Selected Home Assistant control option is unavailable. Choose another or leave blank to disable."
       },
       "abort": {
         "already_configured": "Venice AI is already configured",
@@ -34,7 +34,7 @@
       "step": {
         "init": {
           "title": "Venice AI Options",
-          "description": "Configure Venice AI conversation, voice, and model settings. Models that support web search are marked with 🔍.",
+          "description": "Conversation, voice, and model settings. 🔍 = supports web search.",
           "submit": "Next",
           "data": {
             "chat_model": "AI Model",
@@ -59,53 +59,53 @@
             "stt_timestamps": "Include Word Timestamps"
           },
           "data_description": {
-            "chat_model": "A curated set of voice-assistant-friendly models (function calling, low latency, low cost), ordered by tier: recommended → value → step-up → ultra-light. The ~$X/M figure is an estimated blended cost per 1M chat tokens, assuming a typical 60% input / 40% output mix. See venice.ai/models for the full catalog.",
-            "prompt": "The system prompt sent to the AI before every conversation. Supports the template placeholders ha_name, user_name, and llm_context.",
-            "llm_hass_api": "Expose Home Assistant tools (entities, scripts, etc.) to the AI so it can control your smart home. Select 'Assist' to use the standard HA tool set.",
-            "temperature": "Controls response randomness. Lower values (e.g. 0.2) = focused and deterministic. Higher values (e.g. 1.5) = creative and varied. Default 0.7, range 0–2.",
-            "top_p": "Nucleus sampling: only the top tokens whose combined probability reaches this threshold are considered. Lower = safer output. Default 0.9, range 0–1. Tune Temperature OR Top P, not both.",
-            "max_tokens": "Maximum number of tokens the model may generate per reply. 2048 covers most conversations; increase for long-form output. Range 1–32768.",
-            "strip_thinking_response": "For reasoning models only. Removes the internal chain-of-thought block before showing the reply to the user.",
-            "disable_thinking": "For reasoning models only. Skips the reasoning step entirely — faster responses but less depth on complex questions.",
-            "continue_conversation": "Keep the microphone open after the AI responds with a question, enabling back-and-forth voice conversations without pressing a button.",
-            "enable_web_search": "Allow the AI to search the web when answering questions. Only effective on models marked 🔍 in the model list.",
-            "max_tool_iterations": "How many tool-call rounds the agent may run per user message before it stops and returns what it has. Higher values allow more complex multi-step tasks.",
-            "context_threshold": "When the conversation exceeds this many tokens, the oldest messages are automatically trimmed to keep the context window under the model's limit.",
-            "tts_enabled": "Register Venice AI as a Text-to-Speech provider so voice assistant pipelines can use it for spoken responses.",
-            "tts_model": "The Venice AI model used for speech synthesis. Pricing shown is USD per 1,000,000 characters.",
-            "tts_response_format": "Audio format returned by the TTS API. MP3 is the most compatible; WAV is uncompressed; OGG is smaller.",
-            "tts_speed": "Playback speed multiplier. 1.0 = normal. Range 0.25–4.0.",
-            "stt_enabled": "Register Venice AI as a Speech-to-Text provider so voice assistant pipelines can use it to transcribe spoken input.",
-            "stt_model": "The Venice AI model used for speech transcription.",
-            "stt_response_format": "Format of the transcription response. JSON returns just the text; Verbose JSON adds word-level detail (required for word timestamps).",
-            "stt_timestamps": "Include word-level timestamps in the transcription response. Requires verbose_json response format."
+            "chat_model": "Curated voice-assistant models (function calling, fast, cheap), ordered recommended → value → step-up → ultra-light. ~$X/M = estimated blended cost per 1M tokens (60% in / 40% out). Full catalog: venice.ai/models.",
+            "prompt": "System prompt sent before every conversation. Placeholders: ha_name, user_name, llm_context.",
+            "llm_hass_api": "Expose Home Assistant tools to the AI so it can control your smart home. 'Assist' = the standard HA tool set.",
+            "temperature": "Response randomness. 0.2 = focused, 1.5 = creative. Default 0.7 (0–2).",
+            "top_p": "Nucleus sampling threshold. Lower = safer output. Default 0.9 (0–1). Tune this OR Temperature, not both.",
+            "max_tokens": "Max tokens per reply. 2048 covers most conversations (1–32768).",
+            "strip_thinking_response": "Reasoning models only: hide the chain-of-thought block from replies.",
+            "disable_thinking": "Reasoning models only: skip reasoning entirely — faster, but shallower on complex questions.",
+            "continue_conversation": "Keep the microphone open after the AI asks a question, for hands-free back-and-forth.",
+            "enable_web_search": "Let the AI search the web. Only works on models marked 🔍.",
+            "max_tool_iterations": "Max tool-call rounds per user message. Higher allows more complex multi-step tasks.",
+            "context_threshold": "Trim the oldest messages once the conversation exceeds this many tokens.",
+            "tts_enabled": "Register Venice AI as a Text-to-Speech provider for voice pipelines.",
+            "tts_model": "Model for speech synthesis. Cost is estimated USD per hour of generated audio (~55k characters).",
+            "tts_response_format": "MP3 = most compatible, WAV = uncompressed, OGG = smallest.",
+            "tts_speed": "Playback speed. 1.0 = normal (0.25–4.0).",
+            "stt_enabled": "Register Venice AI as a Speech-to-Text provider for voice pipelines.",
+            "stt_model": "Model for transcription. Cost is USD per hour of audio.",
+            "stt_response_format": "JSON = text only; Verbose JSON adds word-level detail (needed for timestamps).",
+            "stt_timestamps": "Add word-level timestamps. Requires the Verbose JSON format."
           }
         },
         "tts_voice": {
           "title": "TTS Voice",
-          "description": "Pick a voice for **{model_label}**. Voices are model-specific — change the TTS model on the previous step to see a different list.",
+          "description": "Pick a voice for **{model_label}**. Voices are model-specific.",
           "submit": "Next",
           "data": {
             "tts_voice": "TTS Voice"
           },
           "data_description": {
-            "tts_voice": "Voice character used for speech output. Only voices supported by the selected TTS model are listed."
+            "tts_voice": "Only voices supported by the selected TTS model are listed."
           }
         },
         "skills_and_tools": {
           "title": "Skills & Function Calling",
-          "description": "**Active tools:** {tools_names}\n\n[How to add custom tools →](https://github.com/steven-ahfu/venice_ai/blob/new-features/docs/custom-tools-examples.md)",
+          "description": "**Skills** add curated context to the system prompt. **Tools** are functions the AI can call to act on your home.\n\n#### Active tools ({tools_count})\n\n{tools_table}\n\n[How to add custom tools →](https://github.com/steven-ahfu/venice_ai/blob/new-features/docs/custom-tools-examples.md)",
           "data": {
             "skills": "Enabled Skills"
           },
           "data_description": {
-            "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/steven-ahfu/venice_ai/tree/new-features#skills)"
+            "skills": "Check a skill to add its context to the system prompt. [How to add a skill →](https://github.com/steven-ahfu/venice_ai/tree/new-features#skills)"
           }
         }
       },
       "error": {
-        "invalid_tts_voice_for_model": "The selected voice entry is invalid. Please select a valid 'Model → Voice' entry from the list.",
-        "invalid_llm_api": "The selected Home Assistant control option is not available. Please choose a valid option or leave blank to disable."
+        "invalid_tts_voice_for_model": "Invalid voice for this model. Pick one from the list.",
+        "invalid_llm_api": "Selected Home Assistant control option is unavailable. Choose another or leave blank to disable."
       }
     },
     "issues": {
@@ -115,7 +115,7 @@
       },
       "unavailable_model": {
         "title": "Unavailable Venice AI {model_type} model",
-        "description": "The model {model} is no longer available from Venice AI. Please update your integration settings to select a supported model."
+        "description": "The model {model} is no longer available. Select a supported model in the integration options."
       },
       "auth_failure": {
         "title": "Venice AI authentication failed",

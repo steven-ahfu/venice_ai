@@ -187,6 +187,16 @@ STT_MODEL_LABELS: dict[str, str] = {
     "stt-xai-v1": "xAI Speech to Text v1",
 }
 
+# USD price per second of input audio (sourced from GET /models?type=asr →
+# model_spec.pricing.per_audio_second.usd)
+STT_PRICING_USD_PER_SECOND: dict[str, float] = {
+    "nvidia/parakeet-tdt-0.6b-v3": 0.0001,
+    "openai/whisper-large-v3": 0.0001,
+    "fal-ai/wizper": 0.0001,
+    "elevenlabs/scribe-v2": 0.000167,
+    "stt-xai-v1": 0.00003148,
+}
+
 # USD price per 1M input characters (sourced from GET /models?type=tts → model_spec.pricing.input.usd)
 MODEL_PRICING_USD_PER_MTOK: dict[str, float] = {
     "tts-kokoro": 3.5,
@@ -226,18 +236,16 @@ def friendly_voice_label(model_id: str, voice_id: str) -> str:
     American Female "Sky"). The capitalised name alone is not unique — several
     voices share a name across languages/genders (e.g. ``am_santa``,
     ``em_santa``, ``pm_santa`` all become "Santa"), which makes them
-    impossible to tell apart in the voice picker. Append the language/gender
-    so every entry is distinct. Other models already ship user-friendly
-    names — return them unchanged.
+    impossible to tell apart in the voice picker. Append the uppercased
+    prefix after a bullet (``Sky • AF``) so every entry is distinct.
+    Other models already ship user-friendly names — return them unchanged.
     """
     if model_id == "tts-kokoro":
         prefix, _, name = voice_id.partition("_")
         if name and len(prefix) == 2:
             display = name[:1].upper() + name[1:]
-            language = _KOKORO_LANGUAGES.get(prefix[0])
-            gender = _KOKORO_GENDERS.get(prefix[1])
-            if language and gender:
-                return f"{display} ({language} {gender})"
+            if prefix[0] in _KOKORO_LANGUAGES and prefix[1] in _KOKORO_GENDERS:
+                return f"{display} • {prefix.upper()}"
             return display
     return voice_id
 
@@ -263,29 +271,49 @@ def _spec_name_and_price(model: dict | str, model_id: str) -> tuple[str, float |
     return name, price
 
 
-def tts_model_sublabel(model: dict | str) -> str:
-    """Return e.g. ``"Kokoro Text to Speech ($3.50 / 1M chars)"``.
+# ~55k input characters ≈ 1 finished hour of narration at ~150 wpm; used to
+# convert Venice's per-1M-char TTS pricing into an audible-hour cost.
+TTS_CHARS_PER_HOUR = 55_000
 
-    Accepts the full model dict (preferred) or a bare id string.
+# Separator between model name and cost in dropdown labels. Non-breaking
+# spaces — the HA frontend renders labels as HTML, which collapses runs of
+# plain spaces to one.
+_COST_SEPARATOR = "\u00a0" * 5
+
+
+def tts_model_sublabel(model: dict | str) -> str:
+    """Return e.g. ``"Kokoro Text to Speech     $0.19/hr"``.
+
+    Venice prices TTS per 1M input characters; the label converts that to an
+    hour-of-audio cost via TTS_CHARS_PER_HOUR so TTS and STT dropdowns show
+    the same unit. Accepts the full model dict (preferred) or a bare id
+    string. Degrades to just the name (or id) when pricing is unavailable.
     """
     model_id = model.get("id", "") if isinstance(model, dict) else model
     name, price = _spec_name_and_price(model, model_id)
     if price is None:
         return name
-    return f"{name} (${price:.2f} / 1M chars)"
+    hourly = price * TTS_CHARS_PER_HOUR / 1_000_000
+    return f"{name}{_COST_SEPARATOR}${hourly:.2f}/hr"
 
 
 def stt_model_sublabel(model: dict | str) -> str:
-    """Return an STT model label like ``"Whisper Large v3 ($X.XX / 1M chars)"``.
+    """Return an STT model label like ``"Whisper Large V3     $0.36/hr"``.
 
-    Uses the live API name/pricing when available; degrades to just the name
-    (or id) when the API omits pricing.
+    STT models are priced per second of input audio
+    (``model_spec.pricing.per_audio_second.usd``), unlike TTS which is per
+    1M characters. Shown per hour so the number is readable. Degrades to just
+    the name (or id) when pricing is unavailable.
     """
     model_id = model.get("id", "") if isinstance(model, dict) else model
-    name, price = _spec_name_and_price(model, model_id)
+    spec = model.get("model_spec", {}) if isinstance(model, dict) else {}
+    name, _ = _spec_name_and_price(model, model_id)
+    price = ((spec.get("pricing") or {}).get("per_audio_second") or {}).get("usd")
+    if price is None:
+        price = STT_PRICING_USD_PER_SECOND.get(model_id)
     if price is None:
         return name
-    return f"{name} (${price:.2f} / 1M chars)"
+    return f"{name}{_COST_SEPARATOR}${price * 3600:.2f}/hr"
 
 # Automatically keep conversation open after a question response
 CONF_CONTINUE_CONVERSATION = "continue_conversation"
