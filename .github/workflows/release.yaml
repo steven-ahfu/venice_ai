@@ -1,0 +1,87 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - new-features
+      - main
+    paths:
+      - custom_components/venice_ai/manifest.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag and release on version bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from manifest.json
+        id: version
+        run: |
+          version=$(jq -r '.version' custom_components/venice_ai/manifest.json)
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::Could not read version from manifest.json"
+            exit 1
+          fi
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: tag_check
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes from commits
+        if: steps.tag_check.outputs.exists == 'false'
+        id: notes
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          {
+            echo "notes<<EOF_NOTES"
+            if [ -n "$previous_tag" ]; then
+              echo "## Changes since ${previous_tag}"
+              echo
+              git log "${previous_tag}..HEAD" --pretty=format:'- %s' --no-merges
+            else
+              echo "## Changes"
+              echo
+              git log --pretty=format:'- %s' --no-merges -n 20
+            fi
+            echo
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+        run: |
+          gh release create "${TAG}" \
+            --target "${{ github.sha }}" \
+            --title "${TAG}" \
+            --notes "${NOTES}" \
+            --latest
+
+      - name: Skipping (tag exists)
+        if: steps.tag_check.outputs.exists == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: echo "Tag ${TAG} already exists — skipping release."

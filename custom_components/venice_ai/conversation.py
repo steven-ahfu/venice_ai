@@ -2,476 +2,838 @@
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import json
 import logging
-from typing import Any, Literal
+import re
+from collections import OrderedDict
+from typing import Any
 
-# Try importing voluptuous_openapi for schema conversion, handle if not available
-try:
-    from voluptuous_openapi import convert as voluptuous_convert
-    HAS_VOLUPTUOUS_OPENAPI = True
-except ImportError:
-    HAS_VOLUPTUOUS_OPENAPI = False
+from homeassistant.components import conversation as conversation_component
+from homeassistant.components.conversation import (
+    HOME_ASSISTANT_AGENT,
+    ConversationEntity,
+    ConversationEntityFeature,
+    ConversationInput,
+    ConversationResult,
+    ChatLog,
+    UserContent,
+    AssistantContent,
+    SystemContent,
+    ToolResultContent,
+    ConverseError,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_LLM_HASS_API
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, TemplateError
+from homeassistant.helpers import intent, llm, device_registry as dr, selector
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.template import Template
+from homeassistant.util import ulid as ulid_util
 
-# Import client exceptions and client itself
-from .client import AsyncVeniceAIClient, VeniceAIError
-# Import constants for default values and keys
+from .client import AsyncVeniceAIClient, RateLimitError, VeniceAIError
 from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
+    CONF_MAX_TOOL_ITERATIONS,
     CONF_PROMPT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     CONF_STRIP_THINKING_RESPONSE,
     CONF_DISABLE_THINKING,
+    RECOMMENDED_DISABLE_THINKING,
     CONF_ENABLE_WEB_SEARCH,
+    RECOMMENDED_ENABLE_WEB_SEARCH,
+    CONF_CONTINUE_CONVERSATION,
+    RECOMMENDED_CONTINUE_CONVERSATION,
+    CONF_CONTEXT_THRESHOLD,
+    CONF_SKILLS,
     DOMAIN,
+    RECOMMENDED_CONTEXT_THRESHOLD,
+    HAS_VOLUPTUOUS_OPENAPI,
+    MAX_CHAT_HISTORY_SIZE,
+    MAX_CHAT_LOG_LENGTH,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
+    RECOMMENDED_MAX_TOOL_ITERATIONS,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+from .functions import get_function
+from .helpers import get_exposed_entities
 
-# Import necessary types and helpers directly from conversation component
-# This assumes these are correctly exposed in the user's HA version's conversation/__init__.py
-from homeassistant.components.conversation import (
-    ConversationEntity,  # Inherit from this instead of AbstractConversationAgent
-    ChatLog,
-    ConversationEntityFeature,
-    ConversationInput,
-    ConversationResult,
-    SystemContent,  # Needed for type checking in helper
-    UserContent,  # Needed for type checking in helper
-    AssistantContent,  # Needed for constructing/type hints
-    ToolResultContent,  # Needed for type checking in helper
-    # current_chat_log is NOT imported - we receive chat_log as argument
+if HAS_VOLUPTUOUS_OPENAPI:
+    from voluptuous_openapi import convert as voluptuous_convert  # type: ignore[import-untyped]
+
+_LOGGER = logging.getLogger(__name__)
+
+# Default system prompt for Venice AI
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant for {{ ha_name }}. "
+    "You can control lights, switches, climate, media players, and other smart home devices. "
+    "Always be concise and helpful."
+    "{% if skills %}\n\n## Available Skills\n"
+    "{% for skill in skills %}### {{ skill.name }}\n{{ skill.content }}\n{% endfor %}"
+    "{% endif %}"
 )
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
-from homeassistant.core import HomeAssistant, Context # Added Context import
-from homeassistant.exceptions import HomeAssistantError, TemplateError
-# Import llm types correctly
-from homeassistant.helpers import device_registry as dr, intent, llm, template # Added template import
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-# Max number of back and forth with the LLM to generate a response
-MAX_TOOL_ITERATIONS = 10
+def _control_home_assistant_enabled(llm_api: Any) -> bool:
+    """Return whether Home Assistant control/routing is enabled."""
+    if llm_api in (None, "", [], (), {}):
+        return False
+    return True
 
-DEFAULT_SYSTEM_PROMPT = llm.DEFAULT_INSTRUCTIONS_PROMPT
 
-_LOGGER = logging.getLogger(__package__) # Use the standard logger name
+def _hass_result_satisfied(result: ConversationResult | None) -> bool:
+    """Return whether a native Home Assistant result fully handled the request."""
+    return result is not None and getattr(result.response, "error_code", None) is None
 
-# --- Helper Functions for Tool Formatting ---
-def _make_schema_hashable(obj: Any) -> Any:
-    """Recursively make schema objects hashable by replacing selectors with str."""
+
+async def _async_try_hass_agent(
+    hass: HomeAssistant,
+    user_input: ConversationInput,
+    current_agent: Any,
+) -> ConversationResult | None:
+    """Try the built-in Home Assistant agent before Venice."""
+    hass_agent = conversation_component.async_get_agent(hass, HOME_ASSISTANT_AGENT)
+    if hass_agent is None or hass_agent is current_agent:
+        _LOGGER.debug("Home Assistant agent not available for native intent handling")
+        return None
+
+    try:
+        return await hass_agent.async_process(user_input)
+    except Exception as err:
+        _LOGGER.warning("Native Home Assistant handling failed: %s", err)
+        return None
+
+
+_VENICE_THINKING_RE = re.compile(r" thinking\b.*? end of thinking\b", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>…</think> (or  thinking… end of thinking ) blocks from model output.
+
+    Handles both the XML-style tags used by some reasoning models and the
+    literal `` thinking`` / `` end of thinking`` markers emitted by Venice AI.
+    Only matched marker pairs are stripped; an unmatched Venice opener is left
+    in place so legitimate prose containing the phrase ``end of thinking`` is
+    not silently truncated.
+    """
+    if not text:
+        return text
+    # XML-style <think>…</think>
+    while True:
+        start = text.lower().find("<think>")
+        if start == -1:
+            break
+        end = text.lower().find("</think>", start)
+        if end == -1:
+            # unmatched open tag – strip to end to be safe
+            text = text[:start].strip()
+            break
+        text = text[:start] + text[end + 8:]
+    # Venice-style  thinking… end of thinking — strip only matched pairs.
+    text = _VENICE_THINKING_RE.sub("", text)
+    return text.strip()
+
+
+def _build_venice_params(
+    disable_thinking: bool, enable_web_search: bool
+) -> dict[str, Any] | None:
+    """Assemble the ``venice_parameters`` payload, or None if both flags are off.
+
+    Returning None (not an empty dict) matters because an empty dict still
+    serialises as ``"venice_parameters": {}`` on the wire, which some Venice
+    backends reject.
+    """
+    if not (disable_thinking or enable_web_search):
+        return None
+    params: dict[str, Any] = {}
+    if disable_thinking:
+        params["disable_thinking"] = True
+    if enable_web_search:
+        params["enable_web_search"] = "auto"
+    return params
+
+
+def _convert_schema_to_hashable(obj: Any) -> Any:
+    """Recursively convert a voluptuous schema into a hashable representation."""
     if isinstance(obj, dict):
-        return {k: _make_schema_hashable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(_make_schema_hashable(item) for item in obj)
-    elif hasattr(obj, '__class__') and 'Selector' in obj.__class__.__name__:
-        # Replace HA selectors with str type
-        _LOGGER.debug("_make_schema_hashable: replacing selector %s with str", obj.__class__.__name__)
+        return frozenset((k, _convert_schema_to_hashable(v)) for k, v in obj.items())
+    if isinstance(obj, list):
+        return tuple(_convert_schema_to_hashable(v) for v in obj)
+    if isinstance(obj, selector.Selector):
+        _LOGGER.debug(
+            "_convert_schema_to_hashable: replacing selector %s with str",
+            obj.__class__.__name__,
+        )
         return str
-    else:
-        return obj
+    return obj
 
-def _format_venice_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
-    """Format the schema to be compatible with Venice API."""
-    if not schema: return None
-    # Convert voluptuous Schema to dict if needed
-    if hasattr(schema, 'schema'):
-        schema = schema.schema
-    _LOGGER.debug("_format_venice_schema: schema type: %s, has schema attr: %s", type(schema), hasattr(schema, 'schema'))
-    supported_types = {"string", "number", "integer", "boolean", "object", "array"}
-    supported_string_formats = {"date-time"}
+
+def _format_venice_schema(raw_schema: dict[str, Any]) -> dict[str, Any]:
+    """Convert a schema dict into a Venice-compatible OpenAPI-like schema.
+
+    Recursively traverses the schema, preserving nested dict/list structures
+    and selector metadata (e.g., SelectSelector options become JSON Schema
+    ``enum`` values) while mapping Python types to JSON Schema types.
+    """
+    schema: dict[str, Any] = {}
+    for key, val in raw_schema.items():
+        # Unwrap voluptuous Required/Optional wrappers
+        if hasattr(val, "schema"):
+            val = val.schema
+
+        if val is str or val is Any:
+            schema[key] = {"type": "string"}
+        elif val is int:
+            schema[key] = {"type": "integer"}
+        elif val is float:
+            schema[key] = {"type": "number"}
+        elif val is bool:
+            schema[key] = {"type": "boolean"}
+        elif isinstance(val, selector.SelectSelector):
+            config = getattr(val, "config", None)
+            options = getattr(config, "options", None) if config else None
+            if options:
+                schema[key] = {"type": "string", "enum": list(options)}
+                _LOGGER.debug(
+                    "_format_venice_schema: preserved SelectSelector with %d options for key %s",
+                    len(options),
+                    key,
+                )
+            else:
+                schema[key] = {"type": "string"}
+        elif isinstance(val, selector.Selector):
+            _LOGGER.debug(
+                "_format_venice_schema: converting selector %s to string for key %s",
+                val.__class__.__name__,
+                key,
+            )
+            schema[key] = {"type": "string"}
+        elif isinstance(val, dict):
+            schema[key] = {"type": "object", "properties": _format_venice_schema(val)}
+        elif isinstance(val, list):
+            schema[key] = {
+                "type": "array",
+                "items": _format_venice_schema({"__item__": val[0]}).get("__item__", {}),
+            }
+        else:
+            _LOGGER.debug(
+                "_format_venice_schema: unsupported type %s for key %s, defaulting to string",
+                type(val).__name__,
+                key,
+            )
+            schema[key] = {"type": "string"}
+    return schema
+
+
+def _convert_tool_parameters(tool: llm.Tool) -> dict[str, Any] | None:
+    """Convert tool parameters schema to Venice-compatible format."""
+    if not tool.parameters:
+        return None
+
     if HAS_VOLUPTUOUS_OPENAPI:
         try:
-            # Make schema hashable by replacing selectors with str
-            hashable_schema = _make_schema_hashable(schema)
-            converted = voluptuous_convert(hashable_schema)
-            def simplify(sub_schema: dict[str, Any]) -> dict[str, Any]:
-                simplified_sub = {}
-                # Handle anyOf by taking the first item (simplified approach)
-                if "anyOf" in sub_schema:
-                    if sub_schema["anyOf"]:
-                        return simplify(sub_schema["anyOf"][0])
-                    else:
-                        return {"type": "string"}
-                schema_type = sub_schema.get("type")
-                if not isinstance(schema_type, str) or schema_type not in supported_types:
-                     simplified_sub["type"] = "string"
-                     _LOGGER.warning("Unsupported/missing schema type '%s' in sub_schema %s, defaulting to string.", schema_type, sub_schema)
-                else: simplified_sub["type"] = schema_type
-                if "description" in sub_schema: simplified_sub["description"] = sub_schema["description"]
-                if schema_type == "string":
-                    if "enum" in sub_schema: simplified_sub["enum"] = [str(v) for v in sub_schema["enum"]]
-                    if "format" in sub_schema and sub_schema["format"] in supported_string_formats: simplified_sub["format"] = sub_schema["format"]
-                elif schema_type == "object":
+            hashable = _convert_schema_to_hashable(tool.parameters)
+            parameters_schema = voluptuous_convert(hashable)
+            # voluptuous_openapi may return list for 'anyOf' patterns; simplify
+            if isinstance(parameters_schema, list):
+                parameters_schema = parameters_schema[0]
+            if isinstance(parameters_schema, dict) and "properties" in parameters_schema:
+                def _ensure_types(sub_schema: dict[str, Any]) -> None:
                     if "properties" in sub_schema:
-                        simplified_sub["properties"] = {k: simplify(v) for k, v in sub_schema["properties"].items()}
-                        if "required" in sub_schema: simplified_sub["required"] = [str(req) for req in sub_schema["required"]]
-                    else: simplified_sub["properties"] = {}
-                elif schema_type == "array":
-                    if "items" in sub_schema and isinstance(sub_schema["items"], dict): simplified_sub["items"] = simplify(sub_schema["items"])
-                    else: simplified_sub["items"] = {"type": "string"}
-                # Add other types (number, integer, boolean) handling if needed
-                return simplified_sub
-            simplified_schema = simplify(converted)
-            if "properties" in simplified_schema and simplified_schema.get("type") != "object": simplified_schema["type"] = "object"
-            if "properties" not in simplified_schema and simplified_schema.get("type") == "object": simplified_schema["properties"] = {}
-            return simplified_schema
+                        for _, prop in sub_schema["properties"].items():
+                            if isinstance(prop, dict):
+                                if "type" not in prop:
+                                    if "properties" in prop:
+                                        prop["type"] = "object"
+                                    elif "enum" in prop:
+                                        prop["type"] = "string"
+                                    else:
+                                        prop["type"] = "string"
+                                _ensure_types(prop)
+
+                _ensure_types(parameters_schema)
+                return parameters_schema
+            elif isinstance(parameters_schema, dict):
+                return {"type": "object", "properties": parameters_schema}
+            else:
+                _LOGGER.warning(
+                    "Unexpected schema type from voluptuous_openapi: %s",
+                    type(parameters_schema).__name__,
+                )
+                return {"type": "object", "properties": {}}
         except Exception as e:
             _LOGGER.error("Failed to convert schema: %s", e, exc_info=True)
             return {"type": "object", "properties": {}}
     else:
-        _LOGGER.warning("Cannot perform detailed schema conversion without voluptuous_openapi.")
+        _LOGGER.debug("Cannot perform detailed schema conversion without voluptuous_openapi.")
         return {"type": "object", "properties": {}}
 
-def _format_venice_tool(tool: llm.Tool) -> dict[str, Any] | None:
-    """Format a Home Assistant Tool for the Venice API."""
-    parameters_schema = _format_venice_schema(tool.parameters)
-    if parameters_schema is None and tool.parameters:
-        _LOGGER.warning("Could not format params for tool %s. Sending without params.", tool.name)
-        parameters_schema = {"type": "object", "properties": {}}
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": parameters_schema if parameters_schema else {"type": "object", "properties": {}},
-        },
-    }
 
-def _convert_to_venice_message(msg: SystemContent | UserContent | AssistantContent | ToolResultContent) -> dict | None:
-     """Converts Home Assistant conversation log content to Venice API message format."""
-     # msg type hint uses imported types
-     if isinstance(msg, SystemContent):
-          return {"role": "system", "content": msg.content}
-     elif isinstance(msg, UserContent):
-          return {"role": "user", "content": msg.content}
-     elif isinstance(msg, AssistantContent):
-          venice_msg = {"role": "assistant"}
-          # When tool calls are present, Venice AI requires content to not be empty
-          # Set a placeholder content if the original content is empty but tool calls exist
-          if msg.content and msg.content.strip():
-               venice_msg["content"] = msg.content
-          elif msg.tool_calls:
-               # Venice AI requires content when tool calls are present
-               venice_msg["content"] = "I'm processing your request..."
-          else:
-               venice_msg["content"] = msg.content or ""
-          
-          # Convert HA ToolInput back to API tool_call format if present
-          if msg.tool_calls:
-               venice_msg["tool_calls"] = [
+def _convert_chat_log_to_venice_messages(
+    chat_log: ChatLog,
+    system_prompt: str,
+    strip_thinking: bool = False,
+) -> list[dict[str, Any]]:
+    """Convert Home Assistant ChatLog to Venice AI message format."""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    for msg in chat_log.content:
+        if isinstance(msg, UserContent):
+            messages.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AssistantContent):
+            content = _strip_thinking(msg.content) if strip_thinking else msg.content
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
                     {
-                        "id": tc.id, # Important: Assumes ToolInput has 'id' here, which might be wrong
+                        "id": tc.id,
                         "type": "function",
-                        "function": {"name": tc.tool_name, "arguments": json.dumps(tc.tool_args)}
+                        "function": {
+                            "name": tc.tool_name,
+                            "arguments": json.dumps(tc.tool_args),
+                        },
                     }
                     for tc in msg.tool_calls
-               ]
-          return venice_msg
-     elif isinstance(msg, ToolResultContent):
-           return {"role": "tool", "tool_call_id": msg.tool_call_id, "content": json.dumps(msg.tool_result)}
-     else:
-          _LOGGER.warning("Unsupported message type for Venice conversion: %s", type(msg))
-          return None
+                ]
+            # Guard: some APIs reject empty tool_calls arrays
+            if assistant_msg.get("tool_calls") == []:
+                assistant_msg.pop("tool_calls")
+            messages.append(assistant_msg)
+        elif isinstance(msg, ToolResultContent):
+            messages.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": json.dumps(msg.tool_result),
+            })
+        elif isinstance(msg, SystemContent):
+            _LOGGER.debug("Skipping SystemContent in chat_log to avoid duplicate system prompt")
+        else:
+            _LOGGER.warning("Unsupported message type for Venice conversion: %s", type(msg))
 
-# --- End Helper Functions ---
-
-def _build_model_name(base_model: str, options: dict[str, Any]) -> str:
-    """Build the model name with reasoning options suffixes."""
-    model_name = base_model
-
-    # Check if we need to add suffixes
-    strip_thinking = options.get(CONF_STRIP_THINKING_RESPONSE, False)
-    disable_thinking = options.get(CONF_DISABLE_THINKING, False)
-
-    if strip_thinking or disable_thinking:
-        suffixes = []
-        if disable_thinking:
-            suffixes.append("disable_thinking=true")
-        if strip_thinking:
-            suffixes.append("strip_thinking_response=true")
-
-        if suffixes:
-            model_name = f"{base_model}:{'&'.join(suffixes)}"
-
-    return model_name
+    return messages
 
 
-# --- Inherit from ConversationEntity ---
+def _trim_chat_log(chat_log: ChatLog) -> None:
+    """Trim chat log to prevent unbounded growth during long conversations.
+
+    Preserves the first user message and the most recent messages up to
+    MAX_CHAT_LOG_LENGTH. The tail start is advanced past any leading
+    ``ToolResultContent`` so we never keep a tool result whose parent
+    assistant ``tool_calls`` message was trimmed away — that would produce an
+    invalid OpenAI-format sequence (a ``role: "tool"`` message with no
+    preceding assistant ``tool_calls``) and 400 the next API call.
+    """
+    content = chat_log.content
+    if len(content) <= MAX_CHAT_LOG_LENGTH:
+        return
+
+    keep_first = [content[0]]
+    tail_start = len(content) - (MAX_CHAT_LOG_LENGTH - 1)
+    # Advance past orphaned tool results at the head of the tail.
+    while tail_start < len(content) and isinstance(content[tail_start], ToolResultContent):
+        tail_start += 1
+    tail = content[tail_start:]
+    trimmed = keep_first + tail
+    _LOGGER.debug(
+        "Trimmed chat log from %d to %d messages", len(content), len(trimmed)
+    )
+    chat_log.content.clear()
+    chat_log.content.extend(trimmed)
+
+
+def _truncate_message_history(chat_log: ChatLog) -> None:
+    """Clear middle of history on token overflow across multiple turns.
+
+    Fires reactively after an API response reports total_tokens exceeding
+    the configured threshold. Only takes effect when multiple user messages
+    have accumulated (last_user_idx > 1). Complements the count-based
+    _trim_chat_log() which runs proactively before each API call.
+    """
+    messages = chat_log.content
+    last_user_idx = None
+    for i in reversed(range(len(messages))):
+        if isinstance(messages[i], UserContent):
+            last_user_idx = i
+            break
+    if last_user_idx is not None and last_user_idx > 1:
+        removed = last_user_idx - 1
+        del messages[1:last_user_idx]
+        _LOGGER.info(
+            "Token threshold exceeded; removed %d messages from conversation history",
+            removed,
+        )
+
+
 class VeniceAIConversationEntity(ConversationEntity):
-    """Venice AI conversation entity using ConversationEntity pattern."""
+    """Venice AI conversation entity."""
 
-    _attr_has_entity_name = True
-    _attr_name = "VeniceAI Conversation"
-    _attr_description = "Conversation agent"
+    _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry) -> None:
-        """Initialize the Venice AI Conversation agent."""
+        """Initialize the entity."""
         self.entry = entry
-        self._attr_unique_id = entry.entry_id
+        self._client = entry.runtime_data.client
+        self._attr_unique_id = f"{entry.entry_id}_conversation"
+        self._attr_name = entry.title
         self._attr_device_info = dr.DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name=entry.title,
-            manufacturer="Venice AI", model="Venice AI Assistant", entry_type=dr.DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Venice AI",
+            model="Conversation",
+            entry_type=dr.DeviceEntryType.SERVICE,
         )
+        # Conversation history keyed by conversation_id.
+        # OrderedDict used as an LRU cache: entries are moved to the tail on
+        # each access and the oldest (head) entry is evicted when the dict
+        # exceeds MAX_CHAT_HISTORY_SIZE, preventing unbounded memory growth.
+        self._chat_logs: OrderedDict[str, ChatLog] = OrderedDict()
+
+    def _get_or_create_chat_log(self, conversation_id: str | None) -> ChatLog:
+        """Return the persisted ChatLog for *conversation_id*, or create a new one.
+
+        Uses the OrderedDict as an LRU cache:
+        - On hit: move the entry to the tail (most-recently-used position).
+        - On miss: create a new empty ChatLog, insert at the tail, and evict the
+          oldest entry (head) if the cache exceeds MAX_CHAT_HISTORY_SIZE.
+
+        The caller is responsible for appending the new user message after this
+        method returns.
+        """
+        cid = conversation_id or ulid_util.ulid_now()
+        if cid in self._chat_logs:
+            # Promote to most-recently-used
+            self._chat_logs.move_to_end(cid)
+            _LOGGER.debug("Resuming existing conversation %s (%d messages)", cid, len(self._chat_logs[cid].content))
+            return self._chat_logs[cid]
+
+        # New conversation. ChatLog requires `hass` as its first dataclass field —
+        # without it instantiation raises TypeError synchronously, which HA's
+        # pipeline surfaces as "Unexpected error during intent recognition".
+        chat_log = ChatLog(hass=self.hass, conversation_id=cid, content=[])
+        self._chat_logs[cid] = chat_log
+        # Evict least-recently-used if over the limit
+        if len(self._chat_logs) > MAX_CHAT_HISTORY_SIZE:
+            evicted_id, _ = self._chat_logs.popitem(last=False)
+            _LOGGER.debug(
+                "Evicted oldest conversation %s from history cache (limit=%d)",
+                evicted_id,
+                MAX_CHAT_HISTORY_SIZE,
+            )
+        _LOGGER.debug("Started new conversation %s", cid)
+        return chat_log
 
     @property
-    def supported_languages(self) -> list[str] | Literal["*"]: return MATCH_ALL
+    def supported_languages(self) -> list[str]:
+        """Return list of supported languages."""
+        return ["en", "es", "fr", "de", "it", "pt", "nl", "ja", "ko", "zh"]
 
-    # supported_features property is inherited from ConversationEntity,
-    # but we override it to check options
     @property
-    def supported_features(self) -> ConversationEntityFeature:
-        """Return the supported features."""
-        # Enable CONTROL if an LLM API is selected in options
-        if self.entry.options.get(CONF_LLM_HASS_API):
-             return ConversationEntityFeature.CONTROL
-        return ConversationEntityFeature(0)
+    def supported_options(self) -> list[str]:
+        """Return list of supported options."""
+        return [CONF_PROMPT, CONF_CHAT_MODEL, CONF_MAX_TOKENS, CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOOL_ITERATIONS, CONF_STRIP_THINKING_RESPONSE, CONF_DISABLE_THINKING, CONF_ENABLE_WEB_SEARCH, CONF_CONTINUE_CONVERSATION, CONF_CONTEXT_THRESHOLD]
 
-    # async_added_to_hass and async_will_remove_from_hass are inherited
-    # We need the options update listener
-    async def async_internal_added_to_hass(self) -> None:
-        """Call when the entity is added to hass."""
-        await super().async_internal_added_to_hass()
-        # Ensure listener is registered correctly
-        self.entry.async_on_unload(
-            self.entry.add_update_listener(self._async_entry_update_listener)
-        )
+    async def async_process(
+        self, user_input: ConversationInput
+    ) -> ConversationResult:
+        """Process a conversation input."""
+        options = self.entry.options
+        llm_api = options.get(CONF_LLM_HASS_API)
 
-    async def _async_entry_update_listener(
-        self, hass: HomeAssistant, entry: ConfigEntry
-    ) -> None:
-        """Handle options update."""
-        await hass.config_entries.async_reload(entry.entry_id)
+        if _control_home_assistant_enabled(llm_api):
+            hass_result = await _async_try_hass_agent(self.hass, user_input, self)
+            if _hass_result_satisfied(hass_result):
+                return hass_result
 
-    # Abstract method from ConversationEntity we might need
-    async def async_prepare(self, language: str | None = None) -> None:
-        """Load intents for a language. Optional to implement."""
-        # We don't have separate intents, so this can likely be skipped
-        pass
+        return await self._async_process_with_venice(user_input, options, llm_api)
 
-    # Helper to render system prompt (inherited from previous version)
-    async def _async_render_prompt(
-        self, raw_prompt: str, user_input: ConversationInput, llm_context: llm.LLMContext | None = None
-    ) -> str:
-         """Render the prompt template."""
-         user_name: str | None = None
-         if user_input.context and user_input.context.user_id:
-              if user := await self.hass.auth.async_get_user(user_input.context.user_id): user_name = user.name
-         try:
-              return template.Template(raw_prompt, self.hass).async_render(
-                   {"ha_name": self.hass.config.location_name, "user_name": user_name, "llm_context": llm_context},
-                   parse_result=False,
-              )
-         except TemplateError as err:
-              _LOGGER.error("Error rendering prompt template: %s", err)
-              raise HomeAssistantError(f"Error rendering prompt: {err}") from err
-
-    # --- Implement _async_handle_message instead of async_process ---
-    async def _async_handle_message(
+    async def _async_process_with_venice(
         self,
         user_input: ConversationInput,
-        chat_log: ChatLog, # Receives chat_log from framework
+        options: dict[str, Any],
+        llm_api: Any,
     ) -> ConversationResult:
-        """Handle a user message using the provided ChatLog."""
-        options = self.entry.options
-        client: AsyncVeniceAIClient = self.entry.runtime_data
-        hass = self.hass
+        """Process a conversation input with Venice and optional tool use."""
+        model: str = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        # NumberSelector with step=1 still returns a float from the HA frontend;
+        # the Venice API (and our client typing) expects int for max_tokens.
+        max_tokens: int = int(options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+        temperature: float = float(options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE))
+        top_p: float = float(options.get(CONF_TOP_P, RECOMMENDED_TOP_P))
+        strip_thinking: bool = bool(options.get(CONF_STRIP_THINKING_RESPONSE, False))
+        prompt_template_str = options.get(CONF_PROMPT, DEFAULT_SYSTEM_PROMPT)
+
+        # Render system prompt template with Home Assistant context so
+        # template functions (e.g. now(), states(), area_entities()) work.
+        try:
+            prompt_template = Template(prompt_template_str, self.hass)
+            exposed_entities = get_exposed_entities(self.hass)
+
+            # Load enabled skills and build skills context for system prompt
+            skills_context: list[dict[str, str]] = []
+            enabled_skill_names = options.get(CONF_SKILLS, [])
+            if enabled_skill_names:
+                try:
+                    from .skills import SkillManager
+                    skill_manager = await SkillManager.async_get_instance(self.hass)
+                    for skill in skill_manager.get_enabled_skills(enabled_skill_names):
+                        skills_context.append({
+                            "name": skill.name,
+                            "description": skill.description,
+                            "content": skill.content,
+                        })
+                except Exception as skills_err:
+                    _LOGGER.warning("Failed to load skills: %s", skills_err)
+
+            system_prompt = prompt_template.async_render(
+                {
+                    "ha_name": self.hass.config.location_name,
+                    "exposed_entities": exposed_entities,
+                    "current_device_id": user_input.device_id,
+                    "user_input": user_input,
+                    "skills": skills_context,
+                },
+                parse_result=False,
+            )
+        except TemplateError as err:
+            _LOGGER.error("Error rendering prompt template: %s", err)
+            raise HomeAssistantError(f"Error rendering prompt: {err}") from err
+
+        # Set up LLM API(s) if configured.  Accepts either a list of API ids
+        # (new multi-select form) or a single string (legacy stored value).
+        tools: list[llm.Tool] = []
+        llm_context: llm.LLMContext | None = None
+        if llm_api:
+            if isinstance(llm_api, str):
+                llm_api_ids = [llm_api]
+            else:
+                llm_api_ids = list(llm_api)
+            llm_context = llm.LLMContext(
+                platform=DOMAIN,
+                context=user_input.context,
+                language=user_input.language,
+                assistant=HOME_ASSISTANT_AGENT,
+                device_id=user_input.device_id,
+            )
+            for api_id in llm_api_ids:
+                try:
+                    api = await llm.async_get_api(self.hass, api_id, llm_context)
+                    tools.extend(api.tools)
+                except Exception as err:
+                    _LOGGER.warning("Failed to get LLM API %s: %s", api_id, err)
+
+        # Convert tools to Venice format
+        venice_tools = []
+        for tool in tools:
+            tool_dict: dict[str, Any] = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                },
+            }
+            parameters_schema = _convert_tool_parameters(tool)
+            if parameters_schema is None and tool.parameters:
+                _LOGGER.warning(
+                    "Could not format params for tool %s. Sending without params.", tool.name
+                )
+            else:
+                tool_dict["function"]["parameters"] = parameters_schema or {"type": "object", "properties": {}}
+            venice_tools.append(tool_dict)
+
+        # Load function tools from the ToolManager (bundled + user file).
+        # Replaces the previous CONF_FUNCTION_TOOLS YAML textbox: tools now
+        # live in default_tools.yaml (shipped) and /config/venice_ai/tools.yaml
+        # (optional user overrides), validated once at load time.
+        function_configs: list[dict] = []
+        try:
+            from .tools import ToolManager
+            tool_manager = await ToolManager.async_get_instance(self.hass)
+            for tool in tool_manager.get_all_tools():
+                fc = tool.config
+                function_configs.append(fc)
+                venice_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": fc.get("parameters", {"type": "object", "properties": {}}),
+                    },
+                })
+        except Exception as tools_err:
+            _LOGGER.error("Failed to load Venice AI tools: %s", tools_err)
+
+        # Retrieve existing chat log or create a new one, then append the new user message.
+        # History is persisted across calls so the model has full multi-turn context.
+        chat_log = self._get_or_create_chat_log(user_input.conversation_id)
+        chat_log.content.append(UserContent(content=user_input.text))
+
+        assistant_response_content = None
+        text_content = ""
+
+        max_tool_iterations: int = int(options.get(CONF_MAX_TOOL_ITERATIONS, RECOMMENDED_MAX_TOOL_ITERATIONS))
 
         try:
-            # 1. Provide LLM data (prompt + selected tool providers) to the chat log
-            prompt_template = (options.get(CONF_PROMPT) or "") + ("\n\n" if options.get(CONF_PROMPT) else "") + DEFAULT_SYSTEM_PROMPT
-            llm_api_ids = options.get(CONF_LLM_HASS_API) or []
-            if not isinstance(llm_api_ids, list):
-                llm_api_ids = []
-            await chat_log.async_provide_llm_data(
-                user_input.as_llm_context(DOMAIN),
-                llm_api_ids,
-                prompt_template,
-                user_input.extra_system_prompt,
-            )
+            _trim_chat_log(chat_log)
+            for iteration in range(max_tool_iterations):
+                messages = _convert_chat_log_to_venice_messages(
+                    chat_log, system_prompt, strip_thinking=strip_thinking
+                )
 
-            # 2. Format tools for Venice API (using chat_log.llm_api)
-            tools: list[dict[str, Any]] | None = None
-            if chat_log.llm_api:
-                 formatted_tools = []
-                 for tool in chat_log.llm_api.tools:
-                      formatted_tool = _format_venice_tool(tool)
-                      if formatted_tool: formatted_tools.append(formatted_tool)
-                 if formatted_tools:
-                      tools = formatted_tools
+                if not messages:
+                    _LOGGER.error("Message list is empty before sending to API.")
+                    raise HomeAssistantError("Message list is empty before sending to API.")
 
-            # 3. Prepare messages from chat_log history
-            messages = []
-            for msg in chat_log.content: # Use the content from the provided chat_log
-                 converted_msg = _convert_to_venice_message(msg)
-                 if converted_msg: messages.append(converted_msg)
-                 else: _LOGGER.warning("Failed to convert message type %s", type(msg))
+                venice_params = _build_venice_params(
+                    disable_thinking=options.get(CONF_DISABLE_THINKING, RECOMMENDED_DISABLE_THINKING),
+                    enable_web_search=options.get(CONF_ENABLE_WEB_SEARCH, RECOMMENDED_ENABLE_WEB_SEARCH),
+                )
+                response_data = await self._client.chat.completions.create_non_streaming(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    tools=venice_tools if venice_tools else None,
+                    venice_parameters=venice_params,
+                    stream=False,
+                )
+                if not isinstance(response_data, dict):
+                    _LOGGER.error(
+                        "Invalid response type from Venice AI: %s",
+                        type(response_data).__name__,
+                    )
+                    raise HomeAssistantError(
+                        f"Received invalid response type: {type(response_data).__name__}"
+                    )
 
-            if not messages or messages[-1].get("role") != "user":
-                 _LOGGER.error("User message missing from prepared messages list: %s", messages)
-                 # If this happens, it indicates an issue with how the framework manages chat_log
-                 raise HomeAssistantError("User message missing before sending to API.")
+                if not response_data.get("choices"):
+                    _LOGGER.error("Invalid response from Venice AI: %s", response_data)
+                    raise HomeAssistantError("Received invalid response")
 
-            # --- 4. Start conversation loop ---
-            assistant_response_content = None # Final text response
-            next_api_request_messages = messages # Start with full current history
+                choice = response_data["choices"][0]
+                if not isinstance(choice, dict):
+                    _LOGGER.error(
+                        "Invalid choice type in Venice AI response: %s",
+                        type(choice).__name__,
+                    )
+                    raise HomeAssistantError("Received invalid choice format")
 
-            # Build venice_parameters once; enable web search only when the user
-            # opted in. Venice ignores this for models without web search support.
-            venice_parameters: dict[str, Any] = {"include_venice_system_prompt": False}
-            if options.get(CONF_ENABLE_WEB_SEARCH, False):
-                 venice_parameters["enable_web_search"] = "on"
+                message = choice.get("message", {})
+                if not isinstance(message, dict):
+                    _LOGGER.error(
+                        "Invalid message type in Venice AI response: %s",
+                        type(message).__name__,
+                    )
+                    raise HomeAssistantError("Received invalid message format")
 
-            for _iteration in range(MAX_TOOL_ITERATIONS):
-                 api_request_payload = {
-                      "model": _build_model_name(
-                          options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
-                          options
-                      ),
-                      "messages": next_api_request_messages, # Send current message list
-                      "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-                      "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
-                      "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                      "venice_parameters": venice_parameters,
-                      "stream": False,
-                      **({"tools": tools} if tools else {}),
-                 }
+                text_content = message.get("content", "")
+                if strip_thinking:
+                    text_content = _strip_thinking(text_content)
+                tool_calls = message.get("tool_calls", [])
 
-                 response_data = await client.chat.create_non_streaming(api_request_payload)
+                # Reactive token-based truncation: clear history middle if context is filling up
+                usage = response_data.get("usage", {}) if isinstance(response_data, dict) else {}
+                total_tokens: int = int(usage.get("total_tokens", 0) or 0)
+                context_threshold: int = int(options.get(CONF_CONTEXT_THRESHOLD, RECOMMENDED_CONTEXT_THRESHOLD))
+                if total_tokens > context_threshold:
+                    _truncate_message_history(chat_log)
 
-                 if not response_data or not response_data.get("choices"):
-                      _LOGGER.error("Invalid response from Venice AI: %s", response_data)
-                      raise HomeAssistantError("Received invalid response from Venice AI")
+                if not tool_calls:
+                    assistant_response_content = text_content
+                    break
 
-                 assistant_message_data = response_data["choices"][0].get("message", {})
-                 text_content = assistant_message_data.get("content") or "" # Use "" if null/missing
-                 tool_calls_data = assistant_message_data.get("tool_calls")
+                # Process tool calls.
+                #
+                # Every tool call recorded in the assistant message's
+                # ``tool_calls`` MUST get a matching ``ToolResultContent``
+                # below, or the persisted chat log becomes an invalid
+                # OpenAI-format sequence (an assistant ``tool_calls`` message
+                # with no ``role: "tool"`` reply) that 400s on every
+                # subsequent turn — the log lives in the LRU cache, so the
+                # corruption is sticky. We therefore decide accept/reject
+                # ONCE here, and drop unusable calls from history rather than
+                # recording a call we won't answer.
+                validated_calls: list[tuple[str, str, Any]] = []  # (call_id, tool_name, tool_args)
+                tool_inputs_for_history: list[llm.ToolInput] = []
+                for tool_call_data in tool_calls:
+                    call_id = tool_call_data.get("id")
+                    func_details = tool_call_data.get("function", {})
+                    call_type = tool_call_data.get("type", "function")
+                    tool_name = func_details.get("name")
 
-                 # --- Parse Tool Calls for Home Assistant ---
-                 # *** Use llm.ToolInput instead of llm.ToolCall ***
-                 ha_tool_inputs: list[llm.ToolInput] = [] # Changed variable name for clarity
+                    if not call_id or call_type != "function" or not func_details or not tool_name:
+                        _LOGGER.warning("Skipping malformed tool call: %s", tool_call_data)
+                        continue
 
-                 if tool_calls_data:
-                      for tool_call_data in tool_calls_data:
-                           # (Validation and parsing as before)
-                           call_id = tool_call_data.get("id")
-                           call_type = tool_call_data.get("type")
-                           func_details = tool_call_data.get("function")
-                           if not call_id or call_type != "function" or not func_details:
-                               _LOGGER.warning("Skipping malformed tool call: %s", tool_call_data)
-                               continue
-                           tool_name = func_details.get("name")
-                           tool_args_str = func_details.get("arguments", "{}")
-                           if not tool_name:
-                               _LOGGER.warning("Tool call missing name: %s", tool_call_data)
-                               continue
-                           try:
-                               tool_args = json.loads(tool_args_str)
-                           except json.JSONDecodeError:
-                               _LOGGER.error("Failed JSON parse for tool %s args: %s", tool_name, tool_args_str)
-                               # TODO: Send error result back to API? Need call_id.
-                               continue
+                    try:
+                        # ``arguments`` may be absent, JSON null, or invalid
+                        # JSON (common with small models at max_tokens).
+                        tool_args = json.loads(func_details.get("arguments") or "{}")
+                        if not isinstance(tool_args, dict):
+                            raise ValueError("tool arguments must be a JSON object")
+                    except (json.JSONDecodeError, TypeError, ValueError) as arg_err:
+                        # Answer the call with an error result instead of
+                        # dropping it — the model asked for a real tool, so a
+                        # tool reply keeps the sequence valid and lets the
+                        # model recover on the next iteration.
+                        _LOGGER.error(
+                            "Failed JSON parse for tool %s args (%s): %s",
+                            tool_name, arg_err, func_details.get("arguments"),
+                        )
+                        validated_calls.append((call_id, tool_name, None))
+                        tool_inputs_for_history.append(
+                            llm.ToolInput(id=call_id, tool_name=tool_name, tool_args={})
+                        )
+                        continue
 
-                           # Create ToolInput object with id set to API call_id
-                           tool_input = llm.ToolInput(tool_name=tool_name, tool_args=tool_args, id=call_id)
-                           ha_tool_inputs.append(tool_input)
+                    validated_calls.append((call_id, tool_name, tool_args))
+                    tool_inputs_for_history.append(
+                        llm.ToolInput(id=call_id, tool_name=tool_name, tool_args=tool_args)
+                    )
 
+                assistant_content = AssistantContent(
+                    agent_id=self.entity_id,
+                    content=text_content,
+                    tool_calls=tool_inputs_for_history or None,
+                )
+                chat_log.content.append(assistant_content)
 
-                 # --- Add assistant response and execute tools using chat_log ---
-                 # Pass the list of llm.ToolInput objects
-                 tool_results_gen = chat_log.async_add_assistant_content(
-                      AssistantContent( # Use imported type
-                           agent_id=self.unique_id, content=text_content,
-                           tool_calls=ha_tool_inputs or None, # Pass ToolInput list
-                      )
-                 )
-                 # Collect yielded tool results (ToolResultContent)
-                 tool_results: list[ToolResultContent] = [res async for res in tool_results_gen]
+                for call_id, tool_name, tool_args in validated_calls:
+                    if tool_args is None:
+                        # Malformed arguments — record an error result so the
+                        # assistant tool_calls entry is answered.
+                        chat_log.content.append(ToolResultContent(
+                            agent_id=self.entity_id,
+                            tool_call_id=call_id,
+                            tool_name=tool_name,
+                            tool_result={"error": "invalid tool arguments (could not parse JSON)"},
+                        ))
+                        continue
 
-                 # --- Check if loop should continue ---
-                 if not ha_tool_inputs: # Check if tools were requested
-                      assistant_response_content = text_content # Store final text
-                      break # Exit loop
+                    # Find matching tool: first check HA LLM API tools, then custom function configs
+                    tool_result = None
+                    matched_ha_tool = False
+                    for tool in tools:
+                        if tool.name == tool_name:
+                            matched_ha_tool = True
+                            try:
+                                tool_input = llm.ToolInput(
+                                    id=call_id,
+                                    tool_name=tool_name,
+                                    tool_args=tool_args,
+                                )
+                                tool_result = await tool.async_call(
+                                    self.hass, tool_input, llm_context
+                                )
+                            except Exception as tool_err:
+                                _LOGGER.warning("Tool %s failed: %s", tool_name, tool_err)
+                                tool_result = {"error": str(tool_err)}
+                            break
 
-                 # --- Prepare messages for next iteration (send tool results back to API) ---
-                 # Get the Assistant message *just added* to the log
-                 assistant_log_message = chat_log.content[-1 - len(tool_results)]
+                    if not matched_ha_tool:
+                        # Check custom function configs
+                        for fc in function_configs:
+                            if fc.get("name") == tool_name:
+                                try:
+                                    fn = get_function(fc["type"])
+                                    tool_result = await fn.execute(
+                                        self.hass, fc, tool_args, llm_context, exposed_entities
+                                    )
+                                except Exception as fn_err:
+                                    _LOGGER.warning("Function %s failed: %s", tool_name, fn_err)
+                                    tool_result = {"error": str(fn_err)}
+                                break
 
-                 # Convert assistant message and tool results to API format
-                 next_api_request_messages = [_convert_to_venice_message(assistant_log_message)]
-                 for result in tool_results:
-                      _LOGGER.debug("Processing tool result: tool_name=%s, tool_call_id=%s, tool_result=%s", result.tool_name, result.tool_call_id, result.tool_result)
-                      # Use the tool_call_id from ToolResultContent, which should match the API call_id
-                      original_call_id = result.tool_call_id
+                    if tool_result is None:
+                        _LOGGER.warning("Tool %s not found in HA tools or custom functions", tool_name)
+                        tool_result = {"error": f"Tool {tool_name} not found"}
 
-                      # Create the 'tool' role message for the API
-                      tool_api_message = {
-                           "role": "tool",
-                           "tool_call_id": original_call_id, # Use the ID from the result
-                           "content": json.dumps(result.tool_result) # Send the actual result
-                      }
-                      next_api_request_messages.append(tool_api_message)
+                    tool_result_content = ToolResultContent(
+                        agent_id=self.entity_id,
+                        tool_call_id=call_id,
+                        tool_name=tool_name,
+                        tool_result=tool_result,
+                    )
+                    chat_log.content.append(tool_result_content)
 
-
-                 # Prepend the history *before* this assistant/tool turn
-                 turn_start_index = -1
-                 start_search_index = len(chat_log.content) - 2 - len(tool_results)
-                 for i in range(start_search_index, -1, -1):
-                     if isinstance(chat_log.content[i], UserContent):
-                         turn_start_index = i
-                         break
-
-                 if turn_start_index != -1:
-                     original_history_api = [
-                          _convert_to_venice_message(msg)
-                          for msg in chat_log.content[:turn_start_index+1]
-                          if _convert_to_venice_message(msg)
-                     ]
-                     next_api_request_messages = original_history_api + next_api_request_messages
-                 else:
-                      _LOGGER.warning("Could not reliably determine history boundary for tool result loop.")
-                      pass # Keep `next_api_request_messages` as just assistant+tool results
-
-            # --- End conversation loop (normal break or max iterations) ---
+                # Trim chat log to prevent unbounded growth after processing all tool calls
+                _trim_chat_log(chat_log)
             else:
-                 # This block executes if the loop finished due to MAX_TOOL_ITERATIONS (no 'break')
-                 _LOGGER.warning("Reached max tool iterations (%d)", MAX_TOOL_ITERATIONS)
-                 assistant_response_content = text_content or ""
-                 assistant_response_content += "\n\n(Warning: Maximum processing steps reached.)"
+                _LOGGER.warning("Reached max tool iterations (%d)", max_tool_iterations)
+                assistant_response_content = text_content or ""
 
-            # Ensure assistant_response_content is set
             if assistant_response_content is None:
-                 _LOGGER.error("Assistant response content was None after loop.")
-                 assistant_response_content = "Sorry, I couldn't get a response."
+                _LOGGER.error("Assistant response content was None after loop.")
+                assistant_response_content = "Sorry, I couldn't get a response."
 
-            # --- Format final response for Home Assistant ---
+        except RateLimitError as err:
+            _LOGGER.warning("Rate limit hit during conversation: %s", err)
             intent_response = intent.IntentResponse(language=user_input.language)
-            intent_response.async_set_speech(assistant_response_content)
-
-            # Return result. Framework handles history persistence via ChatLog context manager.
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                "Rate limit exceeded. Please wait a moment and try again.",
+            )
             return ConversationResult(
-                 response=intent_response, conversation_id=chat_log.conversation_id,
-                 continue_conversation = chat_log.continue_conversation # Use property from chat_log
+                conversation_id=chat_log.conversation_id,
+                response=intent_response,
+            )
+        except (VeniceAIError, HomeAssistantError, TemplateError) as err:
+            _LOGGER.error("Error during conversation processing: %s", err)
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                f"Error: {err}",
+            )
+            return ConversationResult(
+                conversation_id=chat_log.conversation_id,
+                response=intent_response,
+            )
+        except Exception as err:
+            _LOGGER.exception("Unexpected error during conversation processing")
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                "Unexpected error occurred.",
+            )
+            return ConversationResult(
+                conversation_id=chat_log.conversation_id,
+                response=intent_response,
             )
 
-        # Handle errors during the process
-        except (VeniceAIError, HomeAssistantError, TemplateError) as err:
-             _LOGGER.error("Error during conversation processing: %s", err)
-             intent_response = intent.IntentResponse(language=user_input.language)
-             intent_response.async_set_error(intent.IntentResponseErrorCode.UNKNOWN, f"Error: {err}")
-             conv_id = getattr(chat_log, 'conversation_id', user_input.conversation_id)
-             return ConversationResult(response=intent_response, conversation_id=conv_id)
-        except Exception as err:
-             _LOGGER.exception("Unexpected error during conversation processing")
-             intent_response = intent.IntentResponse(language=user_input.language)
-             intent_response.async_set_error(intent.IntentResponseErrorCode.UNKNOWN, f"Unexpected error: {err}")
-             conv_id = getattr(chat_log, 'conversation_id', user_input.conversation_id)
-             return ConversationResult(response=intent_response, conversation_id=conv_id)
+        # Persist the final assistant turn so subsequent calls see the full history.
+        chat_log.content.append(
+            AssistantContent(agent_id=self.entity_id, content=assistant_response_content)
+        )
+        _trim_chat_log(chat_log)
+
+        # Build response
+        intent_response = intent.IntentResponse(language=user_input.language)
+        intent_response.async_set_speech(assistant_response_content)
+
+        # Signal HA to keep listening if the response ends with a question
+        # and the user has enabled extended conversation in options.
+        should_continue = (
+            options.get(CONF_CONTINUE_CONVERSATION, RECOMMENDED_CONTINUE_CONVERSATION)
+            and assistant_response_content.rstrip().endswith("?")
+        )
+
+        return ConversationResult(
+            conversation_id=chat_log.conversation_id,
+            response=intent_response,
+            continue_conversation=should_continue,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Write state once added so entity_id is resolved before first use."""
+        self.async_write_ha_state()
 
 
 async def async_setup_entry(
@@ -479,11 +841,16 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Venice AI Conversation agent from a config entry."""
-    if not entry.runtime_data:
-         _LOGGER.error("Venice AI client not available in runtime_data for entry %s", entry.entry_id)
-         return
-    # Create the entity instance
-    agent = VeniceAIConversationEntity(entry)
-    # Add the entity to Home Assistant
-    async_add_entities([agent])
+    """Set up Venice AI conversation entity."""
+    from . import VeniceAIRuntimeData
+
+    runtime_data: VeniceAIRuntimeData = entry.runtime_data
+    if not runtime_data or not runtime_data.client:
+        _LOGGER.error(
+            "Venice AI client not available in runtime_data for entry %s",
+            entry.entry_id,
+        )
+        return
+
+    entity = VeniceAIConversationEntity(entry)
+    async_add_entities([entity])

@@ -1,19 +1,23 @@
 generate_image:
+  name: Generate Image
+  description: Generate an image using Venice AI.
   fields:
     config_entry:
+      name: Config Entry
+      description: The Venice AI config entry to use for this service call.
       required: true
       selector:
         config_entry:
           integration: venice_ai
     prompt:
+      name: Prompt
+      description: Image description
       required: true
       selector:
         text:
-          multiline: true
     size:
-      required: false
-      example: "1024x1024"
-      default: "1024x1024"
+      name: Size
+      description: Image size
       selector:
         select:
           options:
@@ -21,38 +25,51 @@ generate_image:
             - "1024x1792"
             - "1792x1024"
     quality:
-      required: false
-      example: "standard"
-      default: "standard"
+      name: Quality
+      description: Image quality
       selector:
         select:
           options:
-            - "standard"
-            - "hd"
+            - standard
+            - hd
     style:
-      required: false
-      example: "vivid"
-      default: "vivid"
+      name: Style
+      description: Image style
       selector:
         select:
           options:
-            - "vivid"
-            - "natural"
+            - vivid
+            - natural
 
 ai_task:
+  name: VeniceAI AI Task
+  description: Generate structured data using Venice AI.
   fields:
     config_entry:
+      name: Config Entry
+      description: The Venice AI config entry to use for this service call.
       required: true
       selector:
         config_entry:
           integration: venice_ai
     task:
+      name: Task
+      description: Task description
       required: true
       selector:
         text:
-          multiline: true
     structure:
-      required: false
+      name: Structure
+      description: Expected response structure or schema
       selector:
         text:
-          multiline: true
+
+reload_skills:
+  name: Reload Skills
+  description: Reload Venice AI skills from the skills directory on disk.
+  fields: {}
+
+reload_tools:
+  name: Reload Tools
+  description: Reload Venice AI tools from default_tools.yaml and the optional config/venice_ai/tools.yaml file.
+  fields: {}
