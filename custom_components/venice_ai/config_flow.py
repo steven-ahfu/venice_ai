@@ -72,9 +72,12 @@ from .const import (
     RECOMMENDED_STT_RESPONSE_FORMAT,
     RECOMMENDED_STT_TIMESTAMPS,
     MODEL_VOICES,
+    MODEL_LABELS,
+    STT_MODEL_LABELS,
     VENICE_TTS_VOICES,
     friendly_voice_label,
     tts_model_sublabel,
+    stt_model_sublabel,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -345,7 +348,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 if isinstance(tts_resp, list):
                     tts_options = [
                         SelectOptionDict(
-                            label=tts_model_sublabel(m.get("id", "")),
+                            label=tts_model_sublabel(m),
                             value=m.get("id", ""),
                         )
                         for m in tts_resp
@@ -366,7 +369,7 @@ class VeniceAIOptionsFlow(OptionsFlow):
                 asr_resp = await client.models.list(model_type="asr")
                 if isinstance(asr_resp, list):
                     stt_options = [
-                        SelectOptionDict(label=m.get("id", "Unknown"), value=m.get("id", ""))
+                        SelectOptionDict(label=stt_model_sublabel(m), value=m.get("id", ""))
                         for m in asr_resp
                         if m.get("id")
                     ]
@@ -394,10 +397,13 @@ class VeniceAIOptionsFlow(OptionsFlow):
         if not tts_options:
             tts_options = [
                 SelectOptionDict(label=tts_model_sublabel(model_id), value=model_id)
-                for model_id in MODEL_VOICES
+                for model_id in MODEL_LABELS
             ] or [SelectOptionDict(label=tts_model_sublabel(RECOMMENDED_TTS_MODEL), value=RECOMMENDED_TTS_MODEL)]
         if not stt_options:
-            stt_options = [SelectOptionDict(label=RECOMMENDED_STT_MODEL, value=RECOMMENDED_STT_MODEL)]
+            stt_options = [
+                SelectOptionDict(label=stt_model_sublabel(model_id), value=model_id)
+                for model_id in STT_MODEL_LABELS
+            ] or [SelectOptionDict(label=stt_model_sublabel(RECOMMENDED_STT_MODEL), value=RECOMMENDED_STT_MODEL)]
 
         return chat_options, tts_options, stt_options, voices_by_model, errors
 

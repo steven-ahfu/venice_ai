@@ -173,6 +173,18 @@ MODEL_LABELS: dict[str, str] = {
     "tts-elevenlabs-turbo-v2-5": "ElevenLabs Turbo v2.5",
     "tts-minimax-speech-02-hd": "MiniMax Speech-02 HD",
     "tts-gemini-3-1-flash": "Gemini 3.1 Flash TTS",
+    "tts-gradium-v1": "Gradium TTS",
+}
+
+# Friendly names for STT/ASR models (sourced from GET /models?type=asr →
+# model_spec.name). Used as an offline fallback; the config flow prefers the
+# live API name when available. Venice does not currently expose STT pricing.
+STT_MODEL_LABELS: dict[str, str] = {
+    "nvidia/parakeet-tdt-0.6b-v3": "Parakeet ASR",
+    "openai/whisper-large-v3": "Whisper Large V3",
+    "fal-ai/wizper": "Wizper (Whisper v3)",
+    "elevenlabs/scribe-v2": "ElevenLabs Scribe V2",
+    "stt-xai-v1": "xAI Speech to Text v1",
 }
 
 # USD price per 1M input characters (sourced from GET /models?type=tts → model_spec.pricing.input.usd)
@@ -187,6 +199,7 @@ MODEL_PRICING_USD_PER_MTOK: dict[str, float] = {
     "tts-elevenlabs-turbo-v2-5": 62.5,
     "tts-minimax-speech-02-hd": 125.0,
     "tts-gemini-3-1-flash": 187.5,
+    "tts-gradium-v1": 47.5,
 }
 
 
@@ -229,10 +242,47 @@ def friendly_voice_label(model_id: str, voice_id: str) -> str:
     return voice_id
 
 
-def tts_model_sublabel(model_id: str) -> str:
-    """Return a display string like ``"Kokoro Text to Speech ($3.50 / 1M chars)"``."""
-    name = MODEL_LABELS.get(model_id, model_id)
-    price = MODEL_PRICING_USD_PER_MTOK.get(model_id)
+def _spec_name_and_price(model: dict | str, model_id: str) -> tuple[str, float | None]:
+    """Extract a display name and per-1M-char USD price for an audio model.
+
+    Prefers live API data (``model_spec.name`` / ``model_spec.pricing.input.usd``
+    from GET /models) so newly-added models are labelled and priced without a
+    code change; falls back to the shipped static maps, then the raw id.
+    ``model`` may be the full model dict or a bare id string (legacy callers).
+    """
+    spec = model.get("model_spec", {}) if isinstance(model, dict) else {}
+    name = (
+        spec.get("name")
+        or MODEL_LABELS.get(model_id)
+        or STT_MODEL_LABELS.get(model_id)
+        or model_id
+    )
+    price = (spec.get("pricing") or {}).get("input", {}).get("usd")
+    if price is None:
+        price = MODEL_PRICING_USD_PER_MTOK.get(model_id)
+    return name, price
+
+
+def tts_model_sublabel(model: dict | str) -> str:
+    """Return e.g. ``"Kokoro Text to Speech ($3.50 / 1M chars)"``.
+
+    Accepts the full model dict (preferred) or a bare id string.
+    """
+    model_id = model.get("id", "") if isinstance(model, dict) else model
+    name, price = _spec_name_and_price(model, model_id)
+    if price is None:
+        return name
+    return f"{name} (${price:.2f} / 1M chars)"
+
+
+def stt_model_sublabel(model: dict | str) -> str:
+    """Return an STT model label like ``"Whisper Large v3 ($X.XX / 1M chars)"``.
+
+    Uses the live API name/pricing when available; degrades to just the name
+    (or id) when the API omits pricing.
+    """
+    model_id = model.get("id", "") if isinstance(model, dict) else model
+    name, price = _spec_name_and_price(model, model_id)
     if price is None:
         return name
     return f"{name} (${price:.2f} / 1M chars)"
