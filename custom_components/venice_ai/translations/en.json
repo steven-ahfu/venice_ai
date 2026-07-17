@@ -8,7 +8,8 @@
                 },
                 "data_description": {
                     "api_key": "Your Venice AI API key. Get one at venice.ai → Settings → API Keys."
-                }
+                },
+                "submit": "Next"
             },
             "reauth_confirm": {
                 "title": "Re-authenticate Venice AI",
@@ -58,7 +59,7 @@
                     "stt_timestamps": "Include Word Timestamps"
                 },
                 "data_description": {
-                    "chat_model": "Only models with function-calling support are listed. The ~$X/M figure is an estimated blended cost per 1M chat tokens, assuming a typical 60% input / 40% output mix. See venice.ai/models for the full list.",
+                    "chat_model": "A curated set of voice-assistant-friendly models (function calling, low latency, low cost), ordered by tier: recommended → value → step-up → ultra-light. The ~$X/M figure is an estimated blended cost per 1M chat tokens, assuming a typical 60% input / 40% output mix. See venice.ai/models for the full catalog.",
                     "prompt": "The system prompt sent to the AI before every conversation. Supports {{ha_name}}, {{user_name}}, and {{llm_context}} placeholders.",
                     "llm_hass_api": "Expose Home Assistant tools (entities, scripts, etc.) to the AI so it can control your smart home. Select 'Assist' to use the standard HA tool set.",
                     "temperature": "Controls response randomness. Lower values (e.g. 0.2) = focused and deterministic. Higher values (e.g. 1.5) = creative and varied. Default 0.7, range 0–2.",
@@ -101,6 +102,10 @@
                     "skills": "Skills inject extra context into the system prompt. [How to add a skill →](https://github.com/steven-ahfu/venice_ai/tree/new-features#skills)"
                 }
             }
+        },
+        "error": {
+            "invalid_tts_voice_for_model": "The selected voice entry is invalid. Please select a valid 'Model → Voice' entry from the list.",
+            "invalid_llm_api": "The selected Home Assistant control option is not available. Please choose a valid option or leave blank to disable."
         }
     },
     "issues": {
@@ -128,6 +133,9 @@
     "exceptions": {
         "invalid_config_entry": {
             "message": "Config entry {config_entry} is not a Venice AI entry."
+        },
+        "config_entry_not_loaded": {
+            "message": "Venice AI config entry {config_entry} is not loaded. Enable or reconfigure the integration and try again."
         },
         "entity_not_found": {
             "message": "Venice AI AI Task entity not found for config entry {entry_id}."
@@ -177,10 +185,6 @@
                     "description": "Expected response structure or schema"
                 }
             }
-        },
-        "conversation": {
-            "name": "VeniceAI Conversation",
-            "description": "Conversation agent"
         },
         "reload_skills": {
             "name": "Reload Skills",

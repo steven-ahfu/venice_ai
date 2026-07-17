@@ -34,6 +34,39 @@ except ImportError:
     _HAS_AI_TASK = False
 
 
+def _structure_to_json_schema(structure) -> dict | None:
+    """Best-effort conversion of a task ``structure`` to a JSON Schema dict.
+
+    ``GenDataTask.structure`` is a voluptuous schema. We reuse
+    ``voluptuous_openapi.convert`` (already a dependency path in this
+    integration) when available; if the dep is missing or conversion fails,
+    return ``None`` so the caller falls back to a plain JSON instruction.
+    """
+    if structure is None:
+        return None
+    try:
+        from voluptuous_openapi import convert
+
+        return convert(structure)
+    except Exception as err:  # pragma: no cover - defensive
+        _LOGGER.debug("Could not convert task structure to JSON schema: %s", err)
+        return None
+
+
+def _extract_json(text: str) -> str:
+    """Strip common markdown code fences so json.loads succeeds on fenced JSON."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the closing fence.
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -118,7 +151,11 @@ else:
             chat_log: conversation.ChatLog,
         ) -> ai_task.GenDataTaskResult:
             """Internal implementation of generate data task."""
-            # Build a local messages list without mutating chat_log.content
+            # Build a local messages list without mutating chat_log.content.
+            # HA core already appends the task instructions to chat_log.content
+            # as a UserContent before calling us (and the custom service path
+            # pre-seeds the ChatLog the same way), so we must NOT append them
+            # again — doing so sent the instruction twice.
             messages = []
             for msg in chat_log.content:
                 if isinstance(msg, conversation.SystemContent):
@@ -132,11 +169,34 @@ else:
                     }
                     messages.append(venice_msg)
 
-            # Append task instructions as a user message in the local list
-            messages.append({"role": "user", "content": task.instructions})
-
             if not messages or messages[-1].get("role") != "user":
                 raise HomeAssistantError("No user message found in chat log")
+
+            # When a structure is requested, actually ask the model for it:
+            # build an OpenAI-style response_format json_schema (best effort)
+            # and prepend a system instruction so models without native
+            # structured output still emit parseable JSON. Without this the
+            # model was never told to produce JSON, so json.loads() failed on
+            # any prose reply.
+            response_format = None
+            if task.structure is not None:
+                json_schema = _structure_to_json_schema(task.structure)
+                if json_schema is not None:
+                    response_format = {
+                        "type": "json_schema",
+                        "json_schema": {"name": "task_result", "schema": json_schema},
+                    }
+                schema_hint = (
+                    json.dumps(json_schema) if json_schema is not None
+                    else "the requested structure"
+                )
+                messages.insert(0, {
+                    "role": "system",
+                    "content": (
+                        "Respond with ONLY a single valid JSON value matching this "
+                        f"JSON schema, with no prose or markdown fences: {schema_hint}"
+                    ),
+                })
 
             # Use the configured chat model from options
             model: str = self.entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
@@ -147,13 +207,19 @@ else:
             max_tokens: int = int(self.entry.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
             temperature: float = float(self.entry.options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE))
 
+            create_kwargs: dict = dict(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=False,
+            )
+            if response_format is not None:
+                create_kwargs["response_format"] = response_format
+
             try:
                 response_data = await self._client.chat.completions.create_non_streaming(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stream=False,
+                    **create_kwargs,
                 )
 
                 if not response_data or not response_data.get("choices"):
@@ -172,7 +238,7 @@ else:
                     )
 
                 try:
-                    data = json.loads(text)
+                    data = json.loads(_extract_json(text))
                 except json.JSONDecodeError as err:
                     _LOGGER.error(
                         "Failed to parse JSON response: %s. Response: %s",

@@ -110,14 +110,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 translation_placeholders={"config_entry": entry_id},
             )
 
-        if entry.runtime_data is None:
+        # runtime_data has no default and is deleted on unload, so a plain
+        # ``entry.runtime_data`` on an unloaded entry raises AttributeError
+        # (a raw traceback) instead of a clean validation error. Guard with
+        # getattr, matching diagnostics.py.
+        runtime_data = getattr(entry, "runtime_data", None)
+        if runtime_data is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="config_entry_not_loaded",
                 translation_placeholders={"config_entry": entry_id},
             )
 
-        client: AsyncVeniceAIClient = entry.runtime_data.client
+        client: AsyncVeniceAIClient = runtime_data.client
 
         try:
             response = await client.images.generate(
@@ -157,7 +162,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     translation_placeholders={"config_entry": entry_id},
                 )
 
-            if entry.runtime_data is None:
+            runtime_data = getattr(entry, "runtime_data", None)
+            if runtime_data is None:
                 raise ServiceValidationError(
                     translation_domain=DOMAIN,
                     translation_key="config_entry_not_loaded",
@@ -165,7 +171,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 )
 
             # Get the AI Task entity from runtime_data (Architecture 7.1 fix)
-            ai_task_entity = entry.runtime_data.ai_task_entity
+            ai_task_entity = runtime_data.ai_task_entity
 
             if ai_task_entity is None:
                 raise ServiceValidationError(

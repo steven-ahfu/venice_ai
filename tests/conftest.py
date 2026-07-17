@@ -197,10 +197,20 @@ _stub(
 _conv = _stub("homeassistant.components.conversation")
 for name in [
     "HOME_ASSISTANT_AGENT", "ConversationEntity", "ConversationEntityFeature",
-    "ConversationInput", "ConversationResult", "ChatLog", "UserContent",
-    "AssistantContent", "SystemContent", "ToolResultContent", "ConverseError",
+    "ConversationInput", "ConversationResult", "ChatLog", "ConverseError",
 ]:
     setattr(_conv, name, unittest.mock.MagicMock())
+
+
+# Real (not MagicMock) content classes so isinstance() checks in
+# conversation.py — e.g. the _trim_chat_log orphan-guard — are testable.
+class _ContentStub:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+for name in ["UserContent", "AssistantContent", "SystemContent", "ToolResultContent"]:
+    setattr(_conv, name, type(name, (_ContentStub,), {}))
 
 # homeassistant.components.stt
 _stt = _stub("homeassistant.components.stt")

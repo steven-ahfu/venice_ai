@@ -477,10 +477,13 @@ class Transcriptions:
                 timeout=60.0,
             )
             response.raise_for_status()
-            if response_format == "json":
+            # json and verbose_json are both JSON payloads with a top-level
+            # "text" field; the plain-text / subtitle formats (text, srt, vtt)
+            # return their body as-is. Parsing verbose_json as text used to
+            # feed the raw JSON blob to the pipeline as the transcript.
+            if response_format in ("json", "verbose_json"):
                 return response.json()
-            else:
-                return {"text": response.text}
+            return {"text": response.text}
 
         except httpx.HTTPStatusError as err:
             error_detail = getattr(err.response, "text", str(err))

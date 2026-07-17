@@ -84,6 +84,26 @@ def test_trim_exactly_at_limit_unchanged():
     assert len(log.content) == MAX_CHAT_LOG_LENGTH
 
 
+def test_trim_does_not_orphan_leading_tool_result():
+    # If the message that would start the kept tail is a ToolResultContent,
+    # its parent assistant tool_calls message was trimmed away — keeping it
+    # would produce an invalid role:"tool"-without-parent sequence. The trim
+    # must advance past leading tool results.
+    from custom_components.venice_ai.const import MAX_CHAT_LOG_LENGTH
+    from homeassistant.components.conversation import ToolResultContent
+
+    msgs = [_FakeMsg(i) for i in range(MAX_CHAT_LOG_LENGTH + 20)]
+    # Force the first two tail messages to be tool results.
+    tail_start = len(msgs) - (MAX_CHAT_LOG_LENGTH - 1)
+    msgs[tail_start] = ToolResultContent(tool_call_id="a", label="tr0")
+    msgs[tail_start + 1] = ToolResultContent(tool_call_id="b", label="tr1")
+    log = _FakeChatLog(msgs)
+    _trim_chat_log(log)
+    # Kept messages: first + tail-after-advancing-past-the-two-tool-results.
+    assert not isinstance(log.content[1], ToolResultContent)
+    assert len(log.content) == MAX_CHAT_LOG_LENGTH - 2
+
+
 # ── _build_venice_params ──────────────────────────────────────────────────────
 # Guard against the "empty dict instead of None" wire-format regression.
 

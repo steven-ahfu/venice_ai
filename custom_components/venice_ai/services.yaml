@@ -68,3 +68,8 @@ reload_skills:
   name: Reload Skills
   description: Reload Venice AI skills from the skills directory on disk.
   fields: {}
+
+reload_tools:
+  name: Reload Tools
+  description: Reload Venice AI tools from default_tools.yaml and the optional config/venice_ai/tools.yaml file.
+  fields: {}

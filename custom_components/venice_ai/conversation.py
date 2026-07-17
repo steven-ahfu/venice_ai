@@ -325,14 +325,22 @@ def _trim_chat_log(chat_log: ChatLog) -> None:
     """Trim chat log to prevent unbounded growth during long conversations.
 
     Preserves the first user message and the most recent messages up to
-    MAX_CHAT_LOG_LENGTH. System and tool-result messages are trimmed first.
+    MAX_CHAT_LOG_LENGTH. The tail start is advanced past any leading
+    ``ToolResultContent`` so we never keep a tool result whose parent
+    assistant ``tool_calls`` message was trimmed away — that would produce an
+    invalid OpenAI-format sequence (a ``role: "tool"`` message with no
+    preceding assistant ``tool_calls``) and 400 the next API call.
     """
     content = chat_log.content
     if len(content) <= MAX_CHAT_LOG_LENGTH:
         return
 
     keep_first = [content[0]]
-    tail = content[-(MAX_CHAT_LOG_LENGTH - 1):]
+    tail_start = len(content) - (MAX_CHAT_LOG_LENGTH - 1)
+    # Advance past orphaned tool results at the head of the tail.
+    while tail_start < len(content) and isinstance(content[tail_start], ToolResultContent):
+        tail_start += 1
+    tail = content[tail_start:]
     trimmed = keep_first + tail
     _LOGGER.debug(
         "Trimmed chat log from %d to %d messages", len(content), len(trimmed)
@@ -642,21 +650,55 @@ class VeniceAIConversationEntity(ConversationEntity):
                     assistant_response_content = text_content
                     break
 
-                # Process tool calls
-                # Build ToolInput list for AssistantContent.tool_calls so history is correct
+                # Process tool calls.
+                #
+                # Every tool call recorded in the assistant message's
+                # ``tool_calls`` MUST get a matching ``ToolResultContent``
+                # below, or the persisted chat log becomes an invalid
+                # OpenAI-format sequence (an assistant ``tool_calls`` message
+                # with no ``role: "tool"`` reply) that 400s on every
+                # subsequent turn — the log lives in the LRU cache, so the
+                # corruption is sticky. We therefore decide accept/reject
+                # ONCE here, and drop unusable calls from history rather than
+                # recording a call we won't answer.
+                validated_calls: list[tuple[str, str, Any]] = []  # (call_id, tool_name, tool_args)
                 tool_inputs_for_history: list[llm.ToolInput] = []
-                for tc in tool_calls:
-                    cid = tc.get("id")
-                    fn = tc.get("function", {})
-                    tname = fn.get("name")
+                for tool_call_data in tool_calls:
+                    call_id = tool_call_data.get("id")
+                    func_details = tool_call_data.get("function", {})
+                    call_type = tool_call_data.get("type", "function")
+                    tool_name = func_details.get("name")
+
+                    if not call_id or call_type != "function" or not func_details or not tool_name:
+                        _LOGGER.warning("Skipping malformed tool call: %s", tool_call_data)
+                        continue
+
                     try:
-                        targs = json.loads(fn.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        targs = {}
-                    if cid and tname:
-                        tool_inputs_for_history.append(
-                            llm.ToolInput(id=cid, tool_name=tname, tool_args=targs)
+                        # ``arguments`` may be absent, JSON null, or invalid
+                        # JSON (common with small models at max_tokens).
+                        tool_args = json.loads(func_details.get("arguments") or "{}")
+                        if not isinstance(tool_args, dict):
+                            raise ValueError("tool arguments must be a JSON object")
+                    except (json.JSONDecodeError, TypeError, ValueError) as arg_err:
+                        # Answer the call with an error result instead of
+                        # dropping it — the model asked for a real tool, so a
+                        # tool reply keeps the sequence valid and lets the
+                        # model recover on the next iteration.
+                        _LOGGER.error(
+                            "Failed JSON parse for tool %s args (%s): %s",
+                            tool_name, arg_err, func_details.get("arguments"),
                         )
+                        validated_calls.append((call_id, tool_name, None))
+                        tool_inputs_for_history.append(
+                            llm.ToolInput(id=call_id, tool_name=tool_name, tool_args={})
+                        )
+                        continue
+
+                    validated_calls.append((call_id, tool_name, tool_args))
+                    tool_inputs_for_history.append(
+                        llm.ToolInput(id=call_id, tool_name=tool_name, tool_args=tool_args)
+                    )
+
                 assistant_content = AssistantContent(
                     agent_id=self.entity_id,
                     content=text_content,
@@ -664,26 +706,16 @@ class VeniceAIConversationEntity(ConversationEntity):
                 )
                 chat_log.content.append(assistant_content)
 
-                for tool_call_data in tool_calls:
-                    call_id = tool_call_data.get("id")
-                    func_details = tool_call_data.get("function", {})
-                    call_type = tool_call_data.get("type", "function")
-                    tool_name = func_details.get("name")
-                    tool_args_str = func_details.get("arguments", "{}")
-
-                    if not call_id or call_type != "function" or not func_details:
-                        _LOGGER.warning("Skipping malformed tool call: %s", tool_call_data)
-                        continue
-                    if not tool_name:
-                        _LOGGER.warning("Tool call missing name: %s", tool_call_data)
-                        continue
-
-                    try:
-                        tool_args = json.loads(tool_args_str)
-                    except json.JSONDecodeError:
-                        _LOGGER.error(
-                            "Failed JSON parse for tool %s args: %s", tool_name, tool_args_str
-                        )
+                for call_id, tool_name, tool_args in validated_calls:
+                    if tool_args is None:
+                        # Malformed arguments — record an error result so the
+                        # assistant tool_calls entry is answered.
+                        chat_log.content.append(ToolResultContent(
+                            agent_id=self.entity_id,
+                            tool_call_id=call_id,
+                            tool_name=tool_name,
+                            tool_result={"error": "invalid tool arguments (could not parse JSON)"},
+                        ))
                         continue
 
                     # Find matching tool: first check HA LLM API tools, then custom function configs
