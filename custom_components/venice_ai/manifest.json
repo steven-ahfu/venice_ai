@@ -1,7 +1,7 @@
 {
   "domain": "venice_ai",
   "name": "VeniceAI Conversation",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "documentation": "https://github.com/steven-ahfu/venice_ai",
   "issue_tracker": "https://github.com/steven-ahfu/venice_ai/issues",
   "requirements": [
