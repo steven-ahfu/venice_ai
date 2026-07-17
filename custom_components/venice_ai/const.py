@@ -16,7 +16,75 @@ except ImportError:
 
 CONF_PROMPT = "prompt"
 CONF_CHAT_MODEL = "chat_model"
-RECOMMENDED_CHAT_MODEL = "e2ee-gemma-4-31b"  # Venice AI default model with function calling support
+RECOMMENDED_CHAT_MODEL = "mistral-small-3-2-24b-instruct"  # top curated pick: non-reasoning, reliable tool calling
+
+# Curated chat models for the voice-assistant use case: function calling
+# required, no forced long reasoning (non-reasoning or effort-controllable),
+# cheap/fast architectures. Selected from the live Venice text-model list on
+# 2026-07-16 (see voicechat_assistant_models.json export). Dict order is the
+# dropdown order: recommended → value → step-up → ultra-light. Prices are USD
+# per 1M tokens and are only a fallback — the config flow prefers live
+# pricing from GET /models when available.
+VOICE_CHAT_MODELS: dict[str, dict] = {
+    # Recommended: start here
+    "mistral-small-3-2-24b-instruct": {
+        "name": "Mistral Small 3.2 24B Instruct", "tier": "recommended",
+        "input_usd": 0.09375, "output_usd": 0.25,
+    },
+    "openai-gpt-oss-120b": {
+        "name": "OpenAI GPT OSS 120B", "tier": "recommended",
+        "input_usd": 0.07, "output_usd": 0.3,
+    },
+    "qwen3-5-9b": {
+        "name": "Qwen 3.5 9B", "tier": "recommended",
+        "input_usd": 0.1, "output_usd": 0.15,
+    },
+    "google-gemma-4-31b-it": {
+        "name": "Google Gemma 4 31B Instruct", "tier": "recommended",
+        "input_usd": 0.12, "output_usd": 0.36,
+    },
+    # Value
+    "nvidia-nemotron-3-nano-30b-a3b": {
+        "name": "NVIDIA Nemotron 3 Nano 30B", "tier": "value",
+        "input_usd": 0.075, "output_usd": 0.3,
+    },
+    "google-gemma-3-27b-it": {
+        "name": "Google Gemma 3 27B Instruct", "tier": "value",
+        "input_usd": 0.12, "output_usd": 0.2,
+    },
+    "zai-org-glm-4.7-flash": {
+        "name": "GLM 4.7 Flash", "tier": "value",
+        "input_usd": 0.125, "output_usd": 0.5,
+    },
+    # Reasoning model with no effort knob — verify thinking can be disabled
+    # before trusting its latency for voice.
+    "deepseek-v4-flash": {
+        "name": "DeepSeek V4 Flash", "tier": "value",
+        "input_usd": 0.138, "output_usd": 0.275,
+    },
+    "openai-gpt-4o-mini-2024-07-18": {
+        "name": "GPT-4o Mini", "tier": "value",
+        "input_usd": 0.1875, "output_usd": 0.75,
+    },
+    "mistral-small-2603": {
+        "name": "Mistral Small 4", "tier": "value",
+        "input_usd": 0.1875, "output_usd": 0.75,
+    },
+    # Step-up: if the cheap ones fumble tool calls
+    "zai-org-glm-4.7": {
+        "name": "GLM 4.7", "tier": "step-up",
+        "input_usd": 0.55, "output_usd": 2.65,
+    },
+    "gemini-3-flash-preview": {
+        "name": "Gemini 3 Flash Preview", "tier": "step-up",
+        "input_usd": 0.7, "output_usd": 3.75,
+    },
+    # Ultra-light: near-instant canned commands only
+    "llama-3.2-3b": {
+        "name": "Llama 3.2 3B", "tier": "ultra-light",
+        "input_usd": 0.15, "output_usd": 0.6,
+    },
+}
 CONF_MAX_TOKENS = "max_tokens"
 RECOMMENDED_MAX_TOKENS = 2048
 CONF_TOP_P = "top_p"

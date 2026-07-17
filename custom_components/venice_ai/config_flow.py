@@ -40,6 +40,7 @@ from homeassistant.helpers.selector import (
 )
 from .client import AsyncVeniceAIClient, AuthenticationError, VeniceAIError
 from .const import (
+    VOICE_CHAT_MODELS,
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_MAX_TOOL_ITERATIONS,
@@ -126,17 +127,44 @@ def _chat_model_label(model: dict[str, Any]) -> str:
     Estimate assumes a 60% input / 40% output token mix per conversation,
     so a model that costs $1/M in and $3.20/M out is shown as
     ``(0.60 × $1.00) + (0.40 × $3.20) = $1.88/M chat tokens``.
-    Returns ``"<Display Name> · ~$X.YZ/M"``.
+    Live API pricing is preferred; for curated models the static snapshot in
+    ``VOICE_CHAT_MODELS`` is the fallback, and their tier is appended.
+    Returns ``"<Display Name> · ~$X.YZ/M · <tier>"``.
     """
     spec = model.get("model_spec") or {}
-    name = spec.get("name") or model.get("id", "Unknown")
+    curated = VOICE_CHAT_MODELS.get(model.get("id", ""))
+    name = spec.get("name") or (curated or {}).get("name") or model.get("id", "Unknown")
     pricing = (spec.get("pricing") or {})
     input_price = pricing.get("input", {}).get("usd")
     output_price = pricing.get("output", {}).get("usd")
+    if (input_price is None or output_price is None) and curated:
+        input_price = curated.get("input_usd")
+        output_price = curated.get("output_usd")
+    tier_suffix = f" · {curated['tier']}" if curated else ""
     if input_price is None or output_price is None:
-        return name
+        return f"{name}{tier_suffix}"
     blended = 0.60 * input_price + 0.40 * output_price
-    return f"{name} · ~${blended:.2f}/M"
+    return f"{name} · ~${blended:.2f}/M{tier_suffix}"
+
+
+def curate_chat_models(
+    fetched: list[SelectOptionDict], current_model: str | None = None
+) -> list[SelectOptionDict]:
+    """Reduce the fetched chat-model options to the curated voice-chat set.
+
+    Keeps ``VOICE_CHAT_MODELS`` dict order (recommended → value → step-up →
+    ultra-light). A currently-selected model that is not curated is appended
+    so an existing config entry never shows an empty/invalid selection. If
+    Venice has rotated out every curated model, the full fetched list is
+    returned unchanged rather than an empty dropdown.
+    """
+    by_id = {opt["value"]: opt for opt in fetched}
+    curated = [by_id[mid] for mid in VOICE_CHAT_MODELS if mid in by_id]
+    if not curated:
+        return fetched
+    if current_model and current_model in by_id and current_model not in VOICE_CHAT_MODELS:
+        curated.append(by_id[current_model])
+    return curated
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -302,8 +330,14 @@ class VeniceAIOptionsFlow(OptionsFlow):
                             is True
                     ]
                     if fetched:
-                        chat_options = fetched
-                        _LOGGER.debug("Found %d text models", len(fetched))
+                        chat_options = curate_chat_models(
+                            fetched,
+                            self.config_entry.options.get(CONF_CHAT_MODEL),
+                        )
+                        _LOGGER.debug(
+                            "Found %d text models, %d after voice-chat curation",
+                            len(fetched), len(chat_options),
+                        )
                     else:
                         _LOGGER.warning("No text models found")
                 else:
@@ -356,9 +390,13 @@ class VeniceAIOptionsFlow(OptionsFlow):
             _LOGGER.exception("Unexpected error fetching models for options flow")
             errors["base"] = "unknown"
 
-        # Fallback to defaults when nothing was fetched
+        # Fallback to defaults when nothing was fetched — offer the curated
+        # set with snapshot pricing so options stay usable while offline.
         if not chat_options:
-            chat_options = [SelectOptionDict(label=RECOMMENDED_CHAT_MODEL, value=RECOMMENDED_CHAT_MODEL)]
+            chat_options = [
+                SelectOptionDict(label=_chat_model_label({"id": model_id}), value=model_id)
+                for model_id in VOICE_CHAT_MODELS
+            ]
         if not tts_options:
             tts_options = [
                 SelectOptionDict(label=tts_model_sublabel(model_id), value=model_id)
