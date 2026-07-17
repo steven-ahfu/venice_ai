@@ -6,6 +6,7 @@ import logging
 from typing import Any, TypedDict
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import (
@@ -63,7 +64,7 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
                 _LOGGER.debug("Coordinator fetched %d text models", len(text_models))
         except AuthenticationError as err:
             _LOGGER.error("Authentication error fetching text models: %s", err)
-            raise UpdateFailed(f"Authentication failed: {err}") from err
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         except RateLimitError as err:
             _LOGGER.warning("Rate limit exceeded fetching text models: %s", err)
             raise UpdateFailed(f"Rate limit exceeded: {err}") from err
@@ -83,7 +84,7 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
                 _LOGGER.debug("Coordinator fetched %d TTS models", len(tts_models))
         except AuthenticationError as err:
             _LOGGER.error("Authentication error fetching TTS models: %s", err)
-            raise UpdateFailed(f"Authentication failed: {err}") from err
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         except RateLimitError as err:
             _LOGGER.warning("Rate limit exceeded fetching TTS models: %s", err)
             raise UpdateFailed(f"Rate limit exceeded: {err}") from err
@@ -103,7 +104,7 @@ class VeniceAIDataUpdateCoordinator(DataUpdateCoordinator[VeniceAICoordinatorDat
                 _LOGGER.debug("Coordinator fetched %d ASR models", len(asr_models))
         except AuthenticationError as err:
             _LOGGER.error("Authentication error fetching ASR models: %s", err)
-            raise UpdateFailed(f"Authentication failed: {err}") from err
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         except RateLimitError as err:
             _LOGGER.warning("Rate limit exceeded fetching ASR models: %s", err)
             raise UpdateFailed(f"Rate limit exceeded: {err}") from err

@@ -14,16 +14,6 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-
-# OptionsFlowWithReload was introduced in HA 2024.1 and automatically reloads
-# the integration when options are saved, removing the need for a manual
-# add_update_listener in __init__.py.  We fall back to plain OptionsFlow so
-# the integration still loads on older cores (manifest minimum is 2024.4.0,
-# so the try-branch will always win in practice).
-try:
-    from homeassistant.config_entries import OptionsFlowWithReload as _OptionsFlowBase
-except ImportError:  # pragma: no cover – only hit on very old HA cores
-    _OptionsFlowBase = OptionsFlow  # type: ignore[assignment, misc]
 from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv, llm, selector
@@ -189,6 +179,7 @@ class VeniceAIConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            self._async_abort_entries_match({CONF_API_KEY: user_input[CONF_API_KEY]})
             try:
                 _LOGGER.debug("Validating Venice AI API key by fetching models")
                 async with AsyncVeniceAIClient(api_key=user_input[CONF_API_KEY]) as client:

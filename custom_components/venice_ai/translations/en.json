@@ -9,6 +9,13 @@
                 "data_description": {
                     "api_key": "Your Venice AI API key. Get one at venice.ai → Settings → API Keys."
                 }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate Venice AI",
+                "description": "The Venice AI API key for {name} is no longer valid. Please enter a new API key to reconnect.",
+                "data": {
+                    "api_key": "Venice AI API Key"
+                }
             }
         },
         "error": {
