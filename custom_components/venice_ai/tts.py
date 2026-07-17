@@ -119,12 +119,21 @@ class VeniceAITTS(TextToSpeechEntity):
         config_key: str,
         default: Any,
     ) -> Any:
-        """Return a TTS option, falling back to config entry then recommended default."""
+        """Return a TTS option value.
+
+        Precedence: the HA-standard key in the runtime ``options`` (e.g.
+        ``voice``/``audio_output``) → the legacy Venice key in the runtime
+        ``options`` (e.g. ``tts_response_format``) → the stored config-entry
+        option → the recommended default. Honouring the legacy runtime key
+        matters because HA's voice pipeline / service calls may pass either.
+        """
         if options is None:
             options = {}
-        return options.get(
-            option_key, self._config_entry.options.get(config_key, default)
-        )
+        if option_key in options:
+            return options[option_key]
+        if config_key in options:
+            return options[config_key]
+        return self._config_entry.options.get(config_key, default)
 
     async def async_get_tts_audio(
         self, message: str, language: str, options: dict[str, Any] | None = None

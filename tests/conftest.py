@@ -88,7 +88,29 @@ class _ConfigFlow:
     def __init_subclass__(cls, **kwargs):
         # HA's real ConfigFlow accepts `domain=...` via PEP 487; absorb it.
         super().__init_subclass__()
-class _OptionsFlow: pass
+
+    def async_show_form(self, **kwargs):
+        return kwargs
+
+    def async_create_entry(self, **kwargs):
+        self.created_entry = kwargs
+        return kwargs
+
+    def _async_abort_entries_match(self, match_dict=None):
+        # No existing entries in the stub environment, so nothing to abort.
+        return None
+
+class _OptionsFlow:
+    def __init__(self, config_entry=None):
+        if config_entry is not None:
+            self.config_entry = config_entry
+
+    def async_show_form(self, **kwargs):
+        return kwargs
+
+    def async_create_entry(self, **kwargs):
+        self.created_entry = kwargs
+        return kwargs
 
 _stub(
     "homeassistant.config_entries",
@@ -119,9 +141,36 @@ _stub("homeassistant.helpers.config_validation", string=str, config_entry_only_c
 
 # homeassistant.helpers.selector
 _sel = _stub("homeassistant.helpers.selector")
+
+
+class _SelectOptionDict(dict):
+    def __init__(self, value=None, label=None):
+        super().__init__(value=value, label=label)
+
+
+class _SelectSelectorConfig:
+    def __init__(self, options=None, mode=None, multiple=False, **kw):
+        self.options = options or []
+        self.mode = mode
+        self.multiple = multiple
+
+
+class _SelectSelector:
+    def __init__(self, config=None):
+        self.config = config
+
+    def __call__(self, value=None):
+        # Act as a pass-through voluptuous validator so vol.Schema accepts it.
+        return value
+
+
+# Real dict/classes so config-flow schema options are introspectable in tests;
+# the remaining selectors are opaque mocks.
+_sel.SelectOptionDict = _SelectOptionDict
+_sel.SelectSelectorConfig = _SelectSelectorConfig
+_sel.SelectSelector = _SelectSelector
 for name in [
     "BooleanSelector", "NumberSelector", "NumberSelectorConfig", "NumberSelectorMode",
-    "SelectOptionDict", "SelectSelector", "SelectSelectorConfig",
     "SelectSelectorMode", "TemplateSelector", "ConfigEntrySelector", "Selector",
 ]:
     setattr(_sel, name, unittest.mock.MagicMock())
@@ -222,11 +271,26 @@ for name in [
     setattr(_stt, name, unittest.mock.MagicMock())
 
 # homeassistant.components.tts
+# Real base class + Voice + option-key constants so VeniceAITTS methods
+# (async_get_supported_voices, async_get_tts_audio) return real values in tests.
 _tts = _stub("homeassistant.components.tts")
-for name in [
-    "ATTR_AUDIO_OUTPUT", "ATTR_VOICE", "TTSAudioRequest", "TTSAudioResponse",
-    "TextToSpeechEntity", "TtsAudioType", "Voice",
-]:
+
+
+class _TextToSpeechEntity:
+    pass
+
+
+class _Voice:
+    def __init__(self, voice_id, name):
+        self.voice_id = voice_id
+        self.name = name
+
+
+_tts.ATTR_AUDIO_OUTPUT = "audio_output"
+_tts.ATTR_VOICE = "voice"
+_tts.TextToSpeechEntity = _TextToSpeechEntity
+_tts.Voice = _Voice
+for name in ["TTSAudioRequest", "TTSAudioResponse", "TtsAudioType"]:
     setattr(_tts, name, unittest.mock.MagicMock())
 
 # homeassistant.components.ai_task

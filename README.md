@@ -50,7 +50,7 @@ To configure the Venice AI integration:
 
 The Venice AI integration automatically filters and displays only models that support function calling, which is required for Home Assistant device control.
 
-The current default model is Llama 3.3 70B (llama-3.3-70b), which provides excellent function calling capabilities for smart home automation.
+The model picker offers a curated set of voice-assistant-friendly models (function calling, low latency, low cost), tiered recommended → value → step-up → ultra-light. The current default is Mistral Small 3.2 24B Instruct, which provides reliable tool calling with no thinking delay.
 
 For reasoning models like Venice Reasoning (qwen-2.5-qwq-32b) or DeepSeek R1 671B, you can disable thinking for lower latency by enabling the "Disable thinking" option in the configuration.
 
@@ -96,6 +96,14 @@ and `venice-assistant` (voice/chat behavior). Enable the skills you want on the
 After adding or editing a skill, pick it up without restarting by calling the
 **`venice_ai.reload_skills`** service (Developer Tools → Actions), or restart
 Home Assistant.
+
+## Contributing
+Contributions are welcome. Please keep changes focused and include tests for bug fixes or new behavior.
+
+To run tests locally:
+```bash
+python3 -m pytest -q
+```
 
 ## Support
 If you encounter any issues or have feature requests, please open an issue on our [GitHub Issues page](https://github.com/steven-ahfu/venice_ai/issues).

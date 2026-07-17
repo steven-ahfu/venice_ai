@@ -97,6 +97,11 @@ CONF_STRIP_THINKING_RESPONSE = "strip_thinking_response"
 CONF_DISABLE_THINKING = "disable_thinking"
 RECOMMENDED_DISABLE_THINKING = False
 
+# Venice AI web search option. Only effective on models whose capabilities
+# advertise supportsWebSearch (marked with 🔍 in the model picker).
+CONF_ENABLE_WEB_SEARCH = "enable_web_search"
+RECOMMENDED_ENABLE_WEB_SEARCH = False
+
 # Venice AI TTS options
 CONF_TTS_MODEL = "tts_model"
 RECOMMENDED_TTS_MODEL = "tts-kokoro"
@@ -270,3 +275,6 @@ CONF_SKILLS = "skills"
 
 CONF_CONTEXT_THRESHOLD = "context_threshold"
 RECOMMENDED_CONTEXT_THRESHOLD = 40000
+
+# Venice AI doesn't have an unsupported-models list currently
+UNSUPPORTED_MODELS: list[str] = []

@@ -34,7 +34,7 @@
         "step": {
             "init": {
                 "title": "Venice AI Options",
-                "description": "Configure Venice AI conversation, voice, and model settings.",
+                "description": "Configure Venice AI conversation, voice, and model settings. Models that support web search are marked with 🔍.",
                 "submit": "Next",
                 "data": {
                     "chat_model": "AI Model",
@@ -68,7 +68,7 @@
                     "strip_thinking_response": "For reasoning models only. Removes the internal chain-of-thought block before showing the reply to the user.",
                     "disable_thinking": "For reasoning models only. Skips the reasoning step entirely — faster responses but less depth on complex questions.",
                     "continue_conversation": "Keep the microphone open after the AI responds with a question, enabling back-and-forth voice conversations without pressing a button.",
-                    "enable_web_search": "Allow the AI to search the web when answering questions.",
+                    "enable_web_search": "Allow the AI to search the web when answering questions. Only effective on models marked 🔍 in the model list.",
                     "max_tool_iterations": "How many tool-call rounds the agent may run per user message before it stops and returns what it has. Higher values allow more complex multi-step tasks.",
                     "context_threshold": "When the conversation exceeds this many tokens, the oldest messages are automatically trimmed to keep the context window under the model's limit.",
                     "tts_enabled": "Register Venice AI as a Text-to-Speech provider so voice assistant pipelines can use it for spoken responses.",

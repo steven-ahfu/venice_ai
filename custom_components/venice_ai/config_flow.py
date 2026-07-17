@@ -118,12 +118,15 @@ def _chat_model_label(model: dict[str, Any]) -> str:
     so a model that costs $1/M in and $3.20/M out is shown as
     ``(0.60 × $1.00) + (0.40 × $3.20) = $1.88/M chat tokens``.
     Live API pricing is preferred; for curated models the static snapshot in
-    ``VOICE_CHAT_MODELS`` is the fallback, and their tier is appended.
-    Returns ``"<Display Name> · ~$X.YZ/M · <tier>"``.
+    ``VOICE_CHAT_MODELS`` is the fallback, and their tier is appended. Models
+    that advertise web-search support are prefixed with 🔍 so the web-search
+    toggle's applicability is visible in the picker.
+    Returns ``"[🔍 ]<Display Name> · ~$X.YZ/M · <tier>"``.
     """
     spec = model.get("model_spec") or {}
     curated = VOICE_CHAT_MODELS.get(model.get("id", ""))
     name = spec.get("name") or (curated or {}).get("name") or model.get("id", "Unknown")
+    web_search_marker = "🔍 " if spec.get("capabilities", {}).get("supportsWebSearch") else ""
     pricing = (spec.get("pricing") or {})
     input_price = pricing.get("input", {}).get("usd")
     output_price = pricing.get("output", {}).get("usd")
@@ -132,9 +135,9 @@ def _chat_model_label(model: dict[str, Any]) -> str:
         output_price = curated.get("output_usd")
     tier_suffix = f" · {curated['tier']}" if curated else ""
     if input_price is None or output_price is None:
-        return f"{name}{tier_suffix}"
+        return f"{web_search_marker}{name}{tier_suffix}"
     blended = 0.60 * input_price + 0.40 * output_price
-    return f"{name} · ~${blended:.2f}/M{tier_suffix}"
+    return f"{web_search_marker}{name} · ~${blended:.2f}/M{tier_suffix}"
 
 
 def curate_chat_models(
